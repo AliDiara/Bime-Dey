@@ -161,6 +161,7 @@ function enrich() {
   });
   S.names = {};
   S.data.users.forEach(u => S.names[u.username] = u.name);
+  S.names.system = 'سیستم';
 }
 const uname = u => u ? (S.names[u] || u) : 'بدون مسئول';
 const isAdmin = () => S.user.role === 'admin';
@@ -267,61 +268,122 @@ function renderView() {
 }
 
 /* ================= داشبورد ================= */
+const short = n => {
+  if (n >= 1e9) return Number((n / 1e9).toFixed(1)).toLocaleString('fa-IR') + ' میلیارد';
+  if (n >= 1e6) return Number((n / 1e6).toFixed(1)).toLocaleString('fa-IR') + ' میلیون';
+  return faNum(n);
+};
+const BUCKETS = [
+  ['overdue', 'سررسید گذشته', 'var(--c-bad)'],
+  ['d7', 'تا ۷ روز', 'var(--c-orange)'],
+  ['d30', '۸ تا ۳۰ روز', 'var(--c-amber)'],
+  ['d60', '۳۱ تا ۶۰ روز', 'var(--c-blue)'],
+  ['later', 'بیش از ۶۰ روز', 'var(--c-slate)']
+];
+
+function donut(parts, total, centerTop, centerBottom) {
+  const R = 42, C = 2 * Math.PI * R, gap = 2.5;
+  let off = 0, arcs = '';
+  parts.forEach(p => {
+    if (!p.v || !total) return;
+    const len = Math.max(p.v / total * C - gap, 0.5);
+    arcs += `<circle cx="60" cy="60" r="${R}" fill="none" stroke="${p.c}" stroke-width="14" stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-off}" transform="rotate(-90 60 60)"><title>${p.l}: ${faNum(p.v)}</title></circle>`;
+    off += p.v / total * C;
+  });
+  return `<svg viewBox="0 0 120 120" class="donut" role="img" aria-label="${centerBottom}">
+    <circle cx="60" cy="60" r="${R}" fill="none" stroke="var(--line)" stroke-width="14"/>${arcs}
+    <text x="60" y="60" text-anchor="middle" class="dn">${centerTop}</text>
+    <text x="60" y="78" text-anchor="middle" class="dl">${centerBottom}</text></svg>`;
+}
+
 function renderDash() {
   if (!S.scope) S.scope = isAdmin() ? 'all' : S.user.username;
   const all = S.data.policies.filter(p => p.days != null);
   const pols = S.scope === 'all' ? all : all.filter(p => p.assignedTo === S.scope);
   const open = pols.filter(p => p.open);
   const sum = a => a.reduce((s, p) => s + p.premiumN, 0);
-  const overdue = open.filter(p => p.days < 0);
-  const d7 = open.filter(p => p.days >= 0 && p.days <= 7);
-  const d30 = open.filter(p => p.days > 7 && p.days <= 30);
-  const d60 = open.filter(p => p.days > 30 && p.days <= 60);
-  const later = open.filter(p => p.days > 60);
+  const B = {
+    overdue: open.filter(p => p.days < 0),
+    d7: open.filter(p => p.days >= 0 && p.days <= 7),
+    d30: open.filter(p => p.days > 7 && p.days <= 30),
+    d60: open.filter(p => p.days > 30 && p.days <= 60),
+    later: open.filter(p => p.days > 60)
+  };
   const renewed = pols.filter(p => p.status === 'renewed');
   const lost = pols.filter(p => ['sold', 'cancelled', 'declined'].includes(p.status));
+  const inProg = pols.filter(p => ['no_answer', 'promised', 'followup', 'wrong_number'].includes(p.status));
+  const fresh = pols.filter(p => p.status === '');
   const fuDue = open.filter(p => p.fu != null && p.fu <= S.today);
-  const worked = pols.filter(p => p.status !== '').length;
-  const rate = pols.length ? Math.round(renewed.length / pols.length * 100) : 0;
+  const rateRaw = pols.length ? renewed.length / pols.length * 100 : 0;
+  const rate = rateRaw > 0 && rateRaw < 10 ? Number(rateRaw.toFixed(1)) : Math.round(rateRaw);
   const renewedSum = renewed.reduce((s, p) => s + (Number(p.finalPremium) || p.premiumN), 0);
-  const max = Math.max(1, overdue.length, d7.length, d30.length, d60.length, later.length);
-  const bar = (l, a, range) => `<div class="row" data-go="${range}"><span class="lab">${l}</span><span class="track"><span class="fill" style="width:${a.length / max * 100}%"></span></span><span class="num">${faNum(a.length)}</span></div>`;
-  const stat = {};
-  pols.forEach(p => stat[p.status] = (stat[p.status] || 0) + 1);
+  const pct = n => open.length ? Math.round(n / open.length * 100) : 0;
+
+  // فوری‌ترین‌ها
+  const cand = open.filter(p => p.days <= 7);
+  const recent = cand.filter(p => p.days >= -30);
+  const urgent = (recent.length ? recent : cand).slice().sort((a, b) => a.days - b.days).slice(0, 6);
+
+  // فعالیت ۱۴ روز اخیر
+  const acts = S.data.actions.filter(a => S.scope === 'all' || a.user === S.scope);
+  const days14 = Array.from({ length: 14 }, (_, i) => S.today - 13 + i);
+  const cnt = days14.map(d => acts.filter(a => Jal.isoToJdn(a.at) === d).length);
+  const cmax = Math.max(1, ...cnt);
 
   const scopeSel = `<select data-scope>${isAdmin() ? '<option value="all">همه کارمندان</option>' : ''}${S.data.users.filter(u => isAdmin() || u.username === S.user.username).map(u => `<option value="${esc(u.username)}" ${S.scope === u.username ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>`;
+
+  const kpi = (cls, ic, n, l, sub, go) => `<div class="card kpi2 ${cls}" ${go ? `data-go="${go}"` : ''}><span class="ico">${ic}</span><div class="n">${n}</div><div class="l">${l}</div><div class="sub">${sub}</div></div>`;
 
   let emp = '';
   if (isAdmin()) {
     const rows = S.data.users.filter(u => u.active).map(u => {
       const mine = all.filter(p => p.assignedTo === u.username);
       const ren = mine.filter(p => p.status === 'renewed');
+      const done = mine.filter(p => !p.open).length;
       const todayActs = S.data.actions.filter(a => a.user === u.username && Jal.isoToJdn(a.at) === S.today).length;
-      return `<tr><td>${esc(u.name)}</td><td>${faNum(mine.length)}</td><td>${faNum(mine.filter(p => p.open).length)}</td><td>${faNum(todayActs)}</td><td>${faNum(ren.length)}</td><td>${faNum(ren.reduce((s, p) => s + (Number(p.finalPremium) || p.premiumN), 0))}</td></tr>`;
+      const prog = mine.length ? Math.round(done / mine.length * 100) : 0;
+      return `<tr><td><b>${esc(u.name)}</b><div class="meta">${u.role === 'admin' ? 'مدیر' : 'کارمند'}</div></td><td>${faNum(mine.length)}</td><td>${faNum(mine.length - done)}</td><td>${faNum(todayActs)}</td><td>${faNum(ren.length)}</td><td style="min-width:110px"><div class="mini"><i style="width:${prog}%"></i></div><span class="meta">${faNum(prog)}٪ بسته‌شده</span></td></tr>`;
     }).join('');
     const un = all.filter(p => !p.assignedTo);
-    emp = `<h2>عملکرد کارمندان</h2><div class="card" style="overflow:auto"><table><tr><th>کارمند</th><th>پرونده</th><th>باز</th><th>اقدام امروز</th><th>تمدید</th><th>حق بیمه تمدیدشده</th></tr>${rows}<tr><td>بدون مسئول</td><td>${faNum(un.length)}</td><td>${faNum(un.filter(p => p.open).length)}</td><td>—</td><td>—</td><td>—</td></tr></table></div>`;
+    emp = `<div class="card" style="margin-top:12px;overflow:auto"><div class="ct">عملکرد کارمندان</div><table><tr><th>کارمند</th><th>پرونده</th><th>باز</th><th>اقدام امروز</th><th>تمدید</th><th>پیشرفت</th></tr>${rows}<tr><td><b>بدون مسئول</b></td><td>${faNum(un.length)}</td><td>${faNum(un.filter(p => p.open).length)}</td><td>—</td><td>—</td><td></td></tr></table></div>`;
   }
 
   $('#view').innerHTML = `
-    <div class="filters">${scopeSel}</div>
+    <div class="dhead"><div><div class="hi">سلام ${esc(S.user.name)} 👋</div><div class="meta">امروز ${Jal.format(S.today)} · ${faNum(open.length)} پرونده باز از ${faNum(pols.length)}</div></div>${scopeSel}</div>
+
     <div class="grid kpis">
-      <div class="card kpi bad" data-go="overdue"><div class="n">${faNum(overdue.length)}</div><div class="l">سررسید گذشته و تمدیدنشده</div></div>
-      <div class="card kpi warn" data-go="d7"><div class="n">${faNum(d7.length)}</div><div class="l">تا ۷ روز آینده</div></div>
-      <div class="card kpi" data-go="followup"><div class="n">${faNum(fuDue.length)}</div><div class="l">پیگیری امروز و عقب‌افتاده</div></div>
-      <div class="card kpi good"><div class="n">${faNum(rate)}٪</div><div class="l">نرخ تمدید (${faNum(renewed.length)} از ${faNum(pols.length)})</div></div>
+      ${kpi('k-bad', '⚠️', faNum(B.overdue.length), 'سررسید گذشته', short(sum(B.overdue)) + ' ریال در خطر', 'overdue')}
+      ${kpi('k-org', '⏰', faNum(B.d7.length), 'تا ۷ روز آینده', short(sum(B.d7)) + ' ریال', 'd7')}
+      ${kpi('k-blue', '📞', faNum(fuDue.length), 'پیگیری امروز و عقب‌افتاده', 'برنامه تماس', 'followup')}
+      ${kpi('k-good', '✅', faNum(rate) + '٪', 'نرخ تمدید', `${faNum(renewed.length)} از ${faNum(pols.length)} · ${short(renewedSum)} ریال`, '')}
     </div>
-    <h2>سررسیدها (فقط پرونده‌های باز)</h2>
-    <div class="card bars">${bar('گذشته', overdue, 'overdue')}${bar('تا ۷ روز', d7, 'd7')}${bar('۸ تا ۳۰ روز', d30, 'd30')}${bar('۳۱ تا ۶۰ روز', d60, 'd60')}${bar('بیش از ۶۰ روز', later, 'all')}</div>
-    <h2>مبالغ (ریال)</h2>
-    <div class="grid kpis">
-      <div class="card kpi bad"><div class="n" style="font-size:18px">${faNum(sum(overdue))}</div><div class="l">حق بیمه سررسید گذشته</div></div>
-      <div class="card kpi warn"><div class="n" style="font-size:18px">${faNum(sum(d7) + sum(d30))}</div><div class="l">حق بیمه ۳۰ روز آینده</div></div>
-      <div class="card kpi good"><div class="n" style="font-size:18px">${faNum(renewedSum)}</div><div class="l">تمدیدشده</div></div>
-      <div class="card kpi"><div class="n" style="font-size:18px">${faNum(sum(lost))}</div><div class="l">ازدست‌رفته (فروش/کنسل/انصراف)</div></div>
+
+    <div class="two" style="margin-top:12px">
+      <div class="card"><div class="ct">وضعیت سررسید پرونده‌های باز</div>
+        <div class="stack">${BUCKETS.map(b => `<i style="flex:${B[b[0]].length || 0};background:${b[2]}" title="${b[1]}: ${faNum(B[b[0]].length)}"></i>`).join('')}</div>
+        <div class="legend">${BUCKETS.map(b => `<div class="lrow" data-go="${b[0] === 'later' ? 'all' : b[0]}"><span class="dot" style="background:${b[2]}"></span><span class="ll">${b[1]}</span><b>${faNum(B[b[0]].length)}</b><span class="meta pc">${faNum(pct(B[b[0]].length))}٪</span><span class="meta pm">${short(sum(B[b[0]]))}</span></div>`).join('')}</div></div>
+      <div class="card"><div class="ct">پیشرفت تمدید</div>
+        <div class="dwrap">${donut([
+          { l: 'تمدید شد', v: renewed.length, c: 'var(--c-good)' },
+          { l: 'در حال پیگیری', v: inProg.length, c: 'var(--c-blue)' },
+          { l: 'ازدست‌رفته', v: lost.length, c: 'var(--c-slate)' },
+          { l: 'بدون اقدام', v: fresh.length, c: 'var(--c-amber)' }
+        ], pols.length, faNum(rate) + '٪', 'تمدید شده')}
+        <div class="legend" style="flex:1;min-width:160px">
+          <div class="lrow" style="cursor:default"><span class="dot" style="background:var(--c-good)"></span><span class="ll">تمدید شد</span><b>${faNum(renewed.length)}</b></div>
+          <div class="lrow" style="cursor:default"><span class="dot" style="background:var(--c-blue)"></span><span class="ll">در حال پیگیری</span><b>${faNum(inProg.length)}</b></div>
+          <div class="lrow" style="cursor:default"><span class="dot" style="background:var(--c-amber)"></span><span class="ll">بدون اقدام</span><b>${faNum(fresh.length)}</b></div>
+          <div class="lrow" style="cursor:default"><span class="dot" style="background:var(--c-slate)"></span><span class="ll">ازدست‌رفته</span><b>${faNum(lost.length)}</b></div>
+          <div class="meta" style="margin-top:6px">ازدست‌رفته: ${short(sum(lost))} ریال (فروش خودرو، کنسل، انصراف)</div></div></div></div>
     </div>
-    <h2>وضعیت پرونده‌ها (${faNum(worked)} از ${faNum(pols.length)} اقدام شده)</h2>
-    <div class="card">${Object.keys(STATUS).map(k => `<span class="badge ${STATUS[k][1]}" style="margin:3px">${STATUS[k][0]}: ${faNum(stat[k] || 0)}</span>`).join('')}</div>
+
+    <div class="two" style="margin-top:12px">
+      <div class="card"><div class="ct">نیاز به اقدام فوری</div>
+        ${urgent.length ? urgent.map(p => `<div class="urow"><div style="flex:1;min-width:0"><div class="nm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(p.insuredName)}</div><div class="meta"><span>${esc(p.branch)}</span><span>${money(p.premiumN)}</span></div></div>${dayBadge(p)}${p.mobile ? `<a class="btn sm" href="tel:${esc(p.mobile)}">📞</a>` : ''}<button class="btn sm pri" data-open="${esc(p.policyNo)}">اقدام</button></div>`).join('') : '<div class="empty">پرونده فوری ندارید 🎉</div>'}
+        ${cand.length > urgent.length ? `<button class="btn more" data-go="d7" style="margin-top:8px">مشاهده همه (${faNum(cand.length)})</button>` : ''}</div>
+      <div class="card"><div class="ct">اقدامات ۱۴ روز اخیر <span class="meta">(${faNum(cnt.reduce((a, b) => a + b, 0))} اقدام)</span></div>
+        <div class="cols">${cnt.map((v, i) => `<div class="col" title="${Jal.format(days14[i])}: ${faNum(v)} اقدام"><i style="height:${v / cmax * 100}%"></i><span>${faNum(Jal.format(days14[i]).slice(-2))}</span></div>`).join('')}</div></div>
+    </div>
     ${emp}`;
 }
 
@@ -531,7 +593,7 @@ async function onFile(e) {
     if (!confirm(`${parsed.length} پرونده خوانده شد${bad ? ` (${bad} ردیف تاریخ نامعتبر)` : ''}. ایمپورت شود؟`)) return;
     msg.textContent = 'در حال ارسال به سرور…';
     const r = await call('import', { rows: parsed });
-    msg.textContent = `انجام شد: ${faNum(r.added)} جدید، ${faNum(r.updated)} به‌روزرسانی. مجموع ${faNum(r.total)}.`;
+    msg.textContent = `انجام شد: ${faNum(r.added)} جدید، ${faNum(r.updated)} به‌روزرسانی${r.autoRenewed ? '، ' + faNum(r.autoRenewed) + ' تمدید خودکار تشخیص داده شد' : ''}. مجموع ${faNum(r.total)}.`;
     await load();
   } catch (err) { msg.textContent = 'خطا: ' + err.message; }
   e.target.value = '';

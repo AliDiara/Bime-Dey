@@ -277,13 +277,61 @@ function importRows_(me, rows) {
       updated++;
     }
   });
+  var auto = detectRenewals_(me, existing, now);
   var out = existing.map(function (p) { return cols.map(function (c) { return p[c] === undefined ? '' : p[c]; }); });
   if (out.length) {
     if (sh.getMaxRows() < out.length + 1) sh.insertRowsAfter(sh.getMaxRows(), out.length + 1 - sh.getMaxRows());
     sh.getRange(2, 1, out.length, cols.length).setNumberFormat('@').setValues(out);
   }
   var total = existing.filter(function (p) { return p.agencyId === me.agencyId; }).length;
-  return { ok: true, added: added, updated: updated, total: total };
+  auto.forEach(function (a) { appendRow_('Actions', a); });
+  return { ok: true, added: added, updated: updated, total: total, autoRenewed: auto.length };
+}
+
+// ---------- تشخیص خودکار تمدید ----------
+// اگر برای همان بیمه‌گذار و همان رشته بیمه‌نامه‌ای با انقضای حدود یک سال دیرتر وجود داشته باشد،
+// بیمه‌نامه قدیمی «تمدید شد» می‌شود. هر بیمه‌نامه جدید فقط یک قدیمی را می‌بندد.
+
+function dayNum_(e) {
+  var m = /^(\d{4})\/(\d{2})\/(\d{2})$/.exec(e);
+  return m ? (+m[1]) * 365.25 + (+m[2] - 1) * 30.4 + (+m[3]) : null;
+}
+
+function detectRenewals_(me, rows, now) {
+  var closed = ['renewed', 'sold', 'cancelled', 'declined'];
+  var groups = {};
+  rows.forEach(function (p) {
+    if (p.agencyId !== me.agencyId || dayNum_(p.expiry) === null || (!p.insuredCode && !p.insuredName)) return;
+    var k = (p.insuredCode || ('n:' + p.insuredName)) + '|' + p.branch;
+    (groups[k] = groups[k] || []).push(p);
+  });
+  var acts = [];
+  Object.keys(groups).forEach(function (k) {
+    var g = groups[k];
+    if (g.length < 2) return;
+    g.sort(function (a, b) { return dayNum_(a.expiry) - dayNum_(b.expiry); });
+    var used = {};
+    for (var qi = 1; qi < g.length; qi++) {
+      var q = g[qi], best = -1, bestDiff = 1e9;
+      for (var pi = 0; pi < qi; pi++) {
+        var p = g[pi];
+        if (used[pi] || closed.indexOf(p.status) >= 0) continue;
+        var gap = dayNum_(q.expiry) - dayNum_(p.expiry);
+        if (gap >= 250 && gap <= 450 && Math.abs(gap - 365) < bestDiff) { best = pi; bestDiff = Math.abs(gap - 365); }
+      }
+      if (best < 0) continue;
+      used[best] = true;
+      var old = g[best];
+      var note = 'تمدید خودکار: بیمه‌نامه جدید ' + q.policyNo;
+      old.status = 'renewed';
+      old.lastActionAt = now;
+      old.nextFollowUp = '';
+      old.finalPremium = q.premium;
+      old.lastNote = note;
+      acts.push({ id: Utilities.getUuid().slice(0, 8), policyNo: old.policyNo, user: 'system', type: 'renewed', note: note, nextFollowUp: '', amount: q.premium, at: now, agencyId: me.agencyId });
+    }
+  });
+  return acts;
 }
 
 // ---------- اقدامات ----------
