@@ -166,17 +166,35 @@ function enrich() {
 const uname = u => u ? (S.names[u] || u) : 'بدون مسئول';
 const isAdmin = () => S.user.role === 'admin';
 
-async function load() {
-  const d = await call('getData');
+function applyData(d) {
   S.user = d.me;
   S.agency = d.agency || { name: '' };
   S.data = { policies: d.policies, actions: d.actions, users: d.users };
   enrich();
 }
 
+async function load() {
+  const d = await call('getData');
+  if (API !== 'demo') ls.set('cache', JSON.stringify(d));
+  applyData(d);
+}
+
+function readCache() {
+  if (API === 'demo') return null;
+  try { return JSON.parse(ls.get('cache') || 'null'); } catch { return null; }
+}
+const setSync = on => { const el = $('#sync'); if (el) el.style.visibility = on ? 'visible' : 'hidden'; };
+// بعد از بروزرسانی پس‌زمینه، فقط اگر کاربر وسط کار نیست صفحه دوباره رسم می‌شود
+function refreshView() {
+  if (document.querySelector('.ov')) return;
+  const ae = document.activeElement;
+  if (ae && /INPUT|TEXTAREA|SELECT/.test(ae.tagName)) return;
+  renderView();
+}
+
 function logout(silent) {
   S.authMode = 'login'; S.requiresCode = undefined;
-  TOKEN = ''; ls.del('token'); ls.del('demo_me'); S.user = null;
+  TOKEN = ''; ls.del('token'); ls.del('demo_me'); ls.del('cache'); S.user = null;
   if (!silent) toast('خارج شدید');
   renderLogin();
 }
@@ -193,10 +211,6 @@ async function renderLogin(err = '') {
       <p style="text-align:center"><a href="#" data-act="demo">امتحان در حالت آزمایشی</a></p></div>`;
     return;
   }
-  if (S.requiresCode === undefined) {
-    app.innerHTML = `<div class="login card"><h1>پیگیری تمدید بیمه</h1><p class="empty">در حال اتصال…</p></div>`;
-    try { S.requiresCode = !!(await call('ping')).requiresCode; } catch (e) { err = e.message; S.requiresCode = false; S.pingFailed = true; }
-  }
   const mode = S.authMode || 'login';
   const role = ls.get('role') === 'employee' ? 'employee' : 'admin';
   const seg = `<div class="seg"><button data-mode="login" class="${mode === 'login' ? 'on' : ''}">ورود</button><button data-mode="register" class="${mode === 'register' ? 'on' : ''}">ثبت‌نام نماینده جدید</button></div>`;
@@ -208,7 +222,7 @@ async function renderLogin(err = '') {
       <div class="f"><label>نام مدیر</label><input id="nm"></div>
       <div class="f"><label>نام کاربری (لاتین، حداقل ۳ کاراکتر)</label><input id="un" dir="ltr" autocapitalize="off" autocomplete="username"></div>
       <div class="f"><label>رمز عبور (حداقل ۶ کاراکتر)</label><input id="pw" type="password" dir="ltr" autocomplete="new-password"></div>
-      ${S.requiresCode ? '<div class="f"><label>کد ثبت‌نام (از ارائه‌دهنده نرم‌افزار بگیرید)</label><input id="code" dir="ltr"></div>' : ''}
+      <div class="f" id="code_w" style="${S.requiresCode ? '' : 'display:none'}"><label>کد ثبت‌نام (از ارائه‌دهنده نرم‌افزار بگیرید)</label><input id="code" dir="ltr"></div>
       <div class="err" id="err">${esc(err)}</div>
       <button class="btn pri" style="width:100%" data-act="register">ساخت حساب مدیر</button>`
     : `
@@ -224,6 +238,14 @@ async function renderLogin(err = '') {
     <p style="text-align:center"><a href="#" data-act="resetApi">تغییر آدرس سرور</a></p></div>`;
   const pw = $('#pw');
   if (pw) pw.addEventListener('keydown', e => { if (e.key === 'Enter') $('.login .btn.pri').click(); });
+  // فرم بلافاصله نشان داده می‌شود؛ نیاز به کد ثبت‌نام در پس‌زمینه پرسیده می‌شود
+  if (S.requiresCode === undefined && !demo) {
+    S.requiresCode = false;
+    call('ping').then(r => {
+      S.requiresCode = !!r.requiresCode;
+      const w = $('#code_w'); if (w) w.style.display = S.requiresCode ? '' : 'none';
+    }).catch(() => { S.requiresCode = undefined; });
+  }
 }
 
 async function doAuth(action) {
@@ -242,8 +264,13 @@ async function doAuth(action) {
     const r = await call(action, body);
     TOKEN = r.token; ls.set('token', TOKEN);
     if (action === 'register') S.fresh = true;
-    await boot();
-  } catch (e) { $('#err').textContent = e.message; btn.disabled = false; }
+    if (r.data && API !== 'demo') ls.set('cache', JSON.stringify(r.data));
+    await boot(r.data);
+  } catch (e) {
+    $('#err').textContent = e.message;
+    btn.disabled = false;
+    if (/کد ثبت‌نام/.test(e.message)) { S.requiresCode = true; const w = $('#code_w'); if (w) w.style.display = ''; }
+  }
 }
 
 /* ================= قاب اصلی ================= */
@@ -252,8 +279,8 @@ function renderShell() {
   if (isAdmin()) tabs.push(['admin', '⚙️', 'مدیریت']);
   $('#app').innerHTML = `
     <div class="top"><h1>${esc(S.agency?.name || 'پیگیری تمدید بیمه')}</h1>
-      <div style="display:flex;gap:8px;align-items:center"><span class="who">${esc(S.user.name)}${isAdmin() ? ' (مدیر)' : ''}</span>
-      <button class="btn sm" data-act="refresh">⟳ بروزرسانی</button><button class="btn sm" data-act="logout">خروج</button></div></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="who">${esc(S.user.name)}${isAdmin() ? ' (مدیر)' : ''}</span>
+      <span id="sync" class="who" style="visibility:hidden">⟳ در حال بروزرسانی…</span><button class="btn sm" data-act="refresh">⟳ بروزرسانی</button><button class="btn sm" data-act="logout">خروج</button></div></div>
     <div class="nav">${tabs.map(t => `<button data-tab="${t[0]}"><span class="ic">${t[1]}</span>${t[2]}</button>`).join('')}</div>
     <div id="view"></div>`;
   renderView();
@@ -627,7 +654,7 @@ document.addEventListener('click', async e => {
   switch (d.act) {
     case 'saveApi': { const v = $('#api').value.trim(); if (!/^https:\/\//.test(v)) return $('#err').textContent = 'آدرس باید با https شروع شود'; API = v; ls.set('api', v); return renderLogin(); }
     case 'demo': e.preventDefault(); API = 'demo'; ls.set('api', 'demo'); return renderLogin();
-    case 'resetApi': e.preventDefault(); API = ''; ls.del('api'); return renderLogin();
+    case 'resetApi': e.preventDefault(); API = ''; ls.del('api'); ls.del('cache'); return renderLogin();
     case 'login': case 'register': return doAuth(d.act);
     case 'logout': return logout();
     case 'refresh': try { await load(); renderView(); toast('بروز شد'); } catch (er) { toast(er.message); } return;
@@ -657,20 +684,34 @@ document.addEventListener('change', e => {
 });
 
 /* ================= شروع ================= */
-async function boot() {
+async function boot(preData) {
   const qp = new URLSearchParams(location.search).get('api');
   if (qp && /^https:\/\//.test(qp) && qp !== API) {
-    API = qp; ls.set('api', qp); TOKEN = ''; ls.del('token');
+    API = qp; ls.set('api', qp); TOKEN = ''; ls.del('token'); ls.del('cache');
   }
   if (qp) history.replaceState(null, '', location.pathname);
   if (!API || !TOKEN && API !== 'demo') return renderLogin();
   if (API === 'demo' && !ls.get('demo_me')) return renderLogin();
-  $('#app').innerHTML = '<div class="empty">در حال بارگذاری…</div>';
-  try {
-    await load();
+  const first = () => {
     S.scope = '';
     if (S.fresh) { S.tab = 'admin'; S.fresh = false; }
     renderShell();
+  };
+  if (preData) { applyData(preData); return first(); }
+  // داده ذخیره‌شده فوراً نشان داده می‌شود و نسخه تازه در پس‌زمینه می‌آید
+  const cached = readCache();
+  if (cached) {
+    applyData(cached);
+    first();
+    setSync(true);
+    try { await load(); refreshView(); } catch (e) { if (TOKEN) toast('ارتباط برقرار نشد؛ داده ذخیره‌شده نمایش داده می‌شود'); }
+    setSync(false);
+    return;
+  }
+  $('#app').innerHTML = '<div class="empty">در حال بارگذاری…</div>';
+  try {
+    await load();
+    first();
   } catch (e) {
     if (TOKEN || API === 'demo') renderLogin(e.message);
   }

@@ -178,7 +178,7 @@ function handle_(req) {
     if (req.role && req.role !== u.role) {
       throw new Error(u.role === 'admin' ? 'این حساب «مدیر» است؛ نقش مدیر را انتخاب کنید' : 'این حساب «کارمند» است؛ نقش کارمند را انتخاب کنید');
     }
-    return { ok: true, token: newSession_(u.username), user: publicUser_(u) };
+    return { ok: true, token: newSession_(u.username), user: publicUser_(u), data: getData_(u) };
   }
 
   var me = authUser_(req.token);
@@ -243,7 +243,8 @@ function register_(req) {
   var id = 'a' + Date.now().toString(36);
   appendRow_('Agencies', { agencyId: id, name: agencyName, createdAt: new Date().toISOString() });
   addUser_(username, name, 'admin', pw, id);
-  return { ok: true, token: newSession_(username), user: { username: username, name: name, role: 'admin', active: true } };
+  var nu = { username: username, name: name, role: 'admin', active: 'true', agencyId: id };
+  return { ok: true, token: newSession_(username), user: publicUser_(nu), data: getData_(nu) };
 }
 
 // ---------- ایمپورت ----------
