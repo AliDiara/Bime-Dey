@@ -90,14 +90,14 @@ function demoCall(action, p) {
   const pub = u => ({ username: u.username, name: u.name, role: u.role, active: u.active });
   const me = db.users.find(u => u.username === ls.get('demo_me'));
   switch (action) {
-    case 'ping': return { ok: true, needsSetup: false };
+    case 'ping': return { ok: true, requiresCode: false };
     case 'login': {
       const u = db.users.find(x => x.username === p.username && x.password === p.password && x.active);
       if (!u) throw new Error('نام کاربری یا رمز اشتباه است');
       ls.set('demo_me', u.username);
       return { ok: true, token: 'demo', user: pub(u) };
     }
-    case 'getData': return { ok: true, me: pub(me), policies: db.policies, actions: db.actions, users: db.users.map(pub) };
+    case 'getData': return { ok: true, me: pub(me), agency: { id: 'demo', name: 'نمایندگی آزمایشی' }, policies: db.policies, actions: db.actions, users: db.users.map(pub) };
     case 'import': {
       const idx = {}; db.policies.forEach((x, i) => idx[x.policyNo] = i);
       let added = 0, updated = 0;
@@ -168,11 +168,13 @@ const isAdmin = () => S.user.role === 'admin';
 async function load() {
   const d = await call('getData');
   S.user = d.me;
+  S.agency = d.agency || { name: '' };
   S.data = { policies: d.policies, actions: d.actions, users: d.users };
   enrich();
 }
 
 function logout(silent) {
+  S.authMode = 'login'; S.requiresCode = undefined;
   TOKEN = ''; ls.del('token'); ls.del('demo_me'); S.user = null;
   if (!silent) toast('خارج شدید');
   renderLogin();
@@ -190,34 +192,57 @@ async function renderLogin(err = '') {
       <p style="text-align:center"><a href="#" data-act="demo">امتحان در حالت آزمایشی</a></p></div>`;
     return;
   }
-  app.innerHTML = `<div class="login card"><h1>پیگیری تمدید بیمه</h1><p class="empty">در حال اتصال…</p></div>`;
-  let needsSetup = false;
-  try { needsSetup = (await call('ping')).needsSetup; } catch (e) { err = e.message; }
-  app.innerHTML = needsSetup ? `<div class="login card"><h1>راه‌اندازی اولیه</h1>
-      <p>اولین کاربر، مدیر (نماینده) است.</p>
-      <div class="f"><label>نام نمایش</label><input id="nm"></div>
-      <div class="f"><label>نام کاربری (لاتین)</label><input id="un" dir="ltr" autocapitalize="off"></div>
-      <div class="f"><label>رمز عبور (حداقل ۴ کاراکتر)</label><input id="pw" type="password" dir="ltr"></div>
+  if (S.requiresCode === undefined) {
+    app.innerHTML = `<div class="login card"><h1>پیگیری تمدید بیمه</h1><p class="empty">در حال اتصال…</p></div>`;
+    try { S.requiresCode = !!(await call('ping')).requiresCode; } catch (e) { err = e.message; S.requiresCode = false; S.pingFailed = true; }
+  }
+  const mode = S.authMode || 'login';
+  const role = ls.get('role') === 'employee' ? 'employee' : 'admin';
+  const seg = `<div class="seg"><button data-mode="login" class="${mode === 'login' ? 'on' : ''}">ورود</button><button data-mode="register" class="${mode === 'register' ? 'on' : ''}">ثبت‌نام نماینده جدید</button></div>`;
+  const demo = API === 'demo';
+  app.innerHTML = `<div class="login card"><h1>پیگیری تمدید بیمه</h1>${demo ? '' : seg}
+    ${mode === 'register' && !demo ? `
+      <p class="meta">برای نمایندگی جدید حساب مدیر بسازید. بعد از ورود، فایل اکسل بیمه دی را بارگذاری و کارمندانتان را تعریف می‌کنید.</p>
+      <div class="f"><label>نام نمایندگی</label><input id="ag"></div>
+      <div class="f"><label>نام مدیر</label><input id="nm"></div>
+      <div class="f"><label>نام کاربری (لاتین، حداقل ۳ کاراکتر)</label><input id="un" dir="ltr" autocapitalize="off" autocomplete="username"></div>
+      <div class="f"><label>رمز عبور (حداقل ۶ کاراکتر)</label><input id="pw" type="password" dir="ltr" autocomplete="new-password"></div>
+      ${S.requiresCode ? '<div class="f"><label>کد ثبت‌نام (از ارائه‌دهنده نرم‌افزار بگیرید)</label><input id="code" dir="ltr"></div>' : ''}
       <div class="err" id="err">${esc(err)}</div>
-      <button class="btn pri" style="width:100%" data-act="setup">ساخت حساب مدیر</button></div>`
-    : `<div class="login card"><h1>ورود</h1>
-      ${API === 'demo' ? '<p class="meta">حالت آزمایشی — مدیر: admin / 1234 — کارمند: ali / 1234</p>' : ''}
-      <div class="f"><label>نام کاربری</label><input id="un" dir="ltr" autocapitalize="off" value="${API === 'demo' ? 'admin' : ''}"></div>
-      <div class="f"><label>رمز عبور</label><input id="pw" type="password" dir="ltr" value="${API === 'demo' ? '1234' : ''}"></div>
+      <button class="btn pri" style="width:100%" data-act="register">ساخت حساب مدیر</button>`
+    : `
+      ${demo ? '<p class="meta">حالت آزمایشی — مدیر: admin / 1234 — کارمند: ali / 1234</p>' : `
+      <div class="f"><label>ورود به‌عنوان</label><div class="seg">
+        <label><input type="radio" name="role" value="admin" ${role === 'admin' ? 'checked' : ''}> مدیر (نماینده)</label>
+        <label><input type="radio" name="role" value="employee" ${role === 'employee' ? 'checked' : ''}> کارمند</label></div></div>`}
+      <div class="f"><label>نام کاربری</label><input id="un" dir="ltr" autocapitalize="off" autocomplete="username" value="${demo ? 'admin' : ''}"></div>
+      <div class="f"><label>رمز عبور</label><input id="pw" type="password" dir="ltr" autocomplete="current-password" value="${demo ? '1234' : ''}"></div>
       <div class="err" id="err">${esc(err)}</div>
       <button class="btn pri" style="width:100%" data-act="login">ورود</button>
-      <p style="text-align:center"><a href="#" data-act="resetApi">تغییر آدرس سرور</a></p></div>`;
-  const pw = $('#pw'); if (pw) pw.addEventListener('keydown', e => { if (e.key === 'Enter') $('[data-act=login],[data-act=setup]').click(); });
+      <p class="meta" style="text-align:center">کارمندان حساب را مدیر نمایندگی می‌سازد.</p>`}
+    <p style="text-align:center"><a href="#" data-act="resetApi">تغییر آدرس سرور</a></p></div>`;
+  const pw = $('#pw');
+  if (pw) pw.addEventListener('keydown', e => { if (e.key === 'Enter') $('.login .btn.pri').click(); });
 }
 
 async function doAuth(action) {
   const body = { username: $('#un').value.trim(), password: $('#pw').value };
-  if (action === 'setup') body.name = $('#nm').value.trim();
+  if (action === 'login') {
+    const r = document.querySelector('input[name=role]:checked');
+    if (r) { body.role = r.value; ls.set('role', r.value); }
+  } else {
+    body.agencyName = $('#ag').value.trim();
+    body.name = $('#nm').value.trim();
+    body.code = $('#code') ? $('#code').value.trim() : '';
+  }
+  const btn = $('.login .btn.pri');
+  btn.disabled = true;
   try {
     const r = await call(action, body);
     TOKEN = r.token; ls.set('token', TOKEN);
+    if (action === 'register') S.fresh = true;
     await boot();
-  } catch (e) { $('#err').textContent = e.message; }
+  } catch (e) { $('#err').textContent = e.message; btn.disabled = false; }
 }
 
 /* ================= قاب اصلی ================= */
@@ -225,7 +250,7 @@ function renderShell() {
   const tabs = [['dash', '📊', 'داشبورد'], ['list', '📋', 'تمدیدها'], ['follow', '📞', 'پیگیری امروز']];
   if (isAdmin()) tabs.push(['admin', '⚙️', 'مدیریت']);
   $('#app').innerHTML = `
-    <div class="top"><h1>پیگیری تمدید بیمه</h1>
+    <div class="top"><h1>${esc(S.agency?.name || 'پیگیری تمدید بیمه')}</h1>
       <div style="display:flex;gap:8px;align-items:center"><span class="who">${esc(S.user.name)}${isAdmin() ? ' (مدیر)' : ''}</span>
       <button class="btn sm" data-act="refresh">⟳ بروزرسانی</button><button class="btn sm" data-act="logout">خروج</button></div></div>
     <div class="nav">${tabs.map(t => `<button data-tab="${t[0]}"><span class="ic">${t[1]}</span>${t[2]}</button>`).join('')}</div>
@@ -445,7 +470,8 @@ async function assign(no, to) {
 /* ================= مدیریت ================= */
 function renderAdmin() {
   const link = API && API !== 'demo' ? `${location.origin}${location.pathname}?api=${encodeURIComponent(API)}` : '';
-  $('#view').innerHTML = `<div class="two">
+  const welcome = S.data.policies.length ? '' : `<div class="card" style="margin-bottom:10px"><b>خوش آمدید 👋</b><div class="meta" style="display:block">شروع کار در دو قدم: ۱) فایل اکسل بیمه دی را بارگذاری کنید. ۲) کارمندان را در بخش «کاربران» بسازید و نام کاربری و رمزشان را بدهید.</div></div>`;
+  $('#view').innerHTML = `${welcome}<div class="two">
     <div class="card"><h2 style="margin-top:0">ایمپورت خروجی بیمه دی</h2>
       <p class="meta">فایل اکسل را انتخاب کنید. پرونده‌های جدید اضافه و پرونده‌های موجود (با شماره بیمه‌نامه) به‌روز می‌شوند. اقدامات ثبت‌شده پاک نمی‌شود.</p>
       <input type="file" id="xl" accept=".xlsx,.xls">
@@ -513,7 +539,7 @@ async function onFile(e) {
 
 /* ================= رویدادها ================= */
 document.addEventListener('click', async e => {
-  const t = e.target.closest('[data-act],[data-tab],[data-range],[data-open],[data-go],[data-fu],[data-user-pw],[data-user-toggle]');
+  const t = e.target.closest('[data-act],[data-mode],[data-tab],[data-range],[data-open],[data-go],[data-fu],[data-user-pw],[data-user-toggle]');
   if (!t) { if (e.target.classList.contains('ov')) closeModal(); return; }
   const d = t.dataset;
   if (d.tab) {
@@ -521,6 +547,7 @@ document.addEventListener('click', async e => {
     else { S.tab = d.tab; if (d.tab === 'list' && S.f.range === 'followup') S.f.range = 'all'; }
     S.limit = 60; return renderView();
   }
+  if (d.mode) { S.authMode = d.mode; return renderLogin(); }
   if (d.range) { S.f.range = d.range; S.limit = 60; return renderView(); }
   if (d.go) { S.tab = 'list'; S.f.range = d.go; S.f.status = 'open'; S.f.assignee = S.scope === 'all' ? 'all' : 'mine'; S.limit = 60; return renderView(); }
   if (d.open) return openPolicy(d.open);
@@ -539,7 +566,7 @@ document.addEventListener('click', async e => {
     case 'saveApi': { const v = $('#api').value.trim(); if (!/^https:\/\//.test(v)) return $('#err').textContent = 'آدرس باید با https شروع شود'; API = v; ls.set('api', v); return renderLogin(); }
     case 'demo': e.preventDefault(); API = 'demo'; ls.set('api', 'demo'); return renderLogin();
     case 'resetApi': e.preventDefault(); API = ''; ls.del('api'); return renderLogin();
-    case 'login': case 'setup': return doAuth(d.act);
+    case 'login': case 'register': return doAuth(d.act);
     case 'logout': return logout();
     case 'refresh': try { await load(); renderView(); toast('بروز شد'); } catch (er) { toast(er.message); } return;
     case 'more': S.limit += 60; return renderList();
@@ -580,6 +607,7 @@ async function boot() {
   try {
     await load();
     S.scope = '';
+    if (S.fresh) { S.tab = 'admin'; S.fresh = false; }
     renderShell();
   } catch (e) {
     if (TOKEN || API === 'demo') renderLogin(e.message);
