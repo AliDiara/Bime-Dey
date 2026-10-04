@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>تست اتصال</title>
+<style>
+body{font-family:Tahoma,sans-serif;margin:0;padding:16px;background:#f4f6f8;color:#16202a;line-height:1.7}
+h1{font-size:18px}
+.r{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;margin:8px 0}
+.ok{color:#16a34a}.bad{color:#dc2626}.wait{color:#64748b}
+pre{white-space:pre-wrap;direction:ltr;text-align:left;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px;font-size:12px}
+button{padding:10px 16px;border-radius:10px;border:0;background:#0f766e;color:#fff;font-size:15px}
+</style>
+</head>
+<body>
+<h1>تست اتصال برنامه پیگیری تمدید</h1>
+<p>صبر کنید تا همه موارد کامل شود (تا ۳۰ ثانیه)، بعد از صفحه اسکرین‌شات بفرستید.</p>
+<div id="out"></div>
+<p><button id="copy">کپی نتیجه</button></p>
+<pre id="txt"></pre>
+<script>
+(function () {
+  var out = document.getElementById('out'), lines = [];
+  function row(name, status, detail) {
+    var cls = status === true ? 'ok' : status === false ? 'bad' : 'wait';
+    var mark = status === true ? '✔' : status === false ? '✘' : '…';
+    var el = document.createElement('div'); el.className = 'r';
+    el.innerHTML = '<b>' + name + '</b>: <span class="' + cls + '">' + mark + ' ' + (detail || '') + '</span>';
+    out.appendChild(el);
+    lines.push(name + ': ' + mark + ' ' + (detail || ''));
+    document.getElementById('txt').textContent = navigator.userAgent + '\n' + lines.join('\n');
+  }
+  function feat(name, fn) { var ok = false; try { ok = !!fn(); } catch (e) { ok = false; } row('پشتیبانی ' + name, ok, ok ? 'دارد' : 'ندارد'); }
+
+  feat('JavaScript جدید (?.)', function () { return eval('({a:1})?.a === 1'); });
+  feat('catch بدون متغیر', function () { return eval('try{throw 1}catch{true}'); });
+  feat('fetch', function () { return window.fetch; });
+  feat('AbortController', function () { return window.AbortController; });
+  feat('color-mix (CSS)', function () { return window.CSS && CSS.supports('color', 'color-mix(in srgb, red 10%, blue)'); });
+  feat('localStorage', function () { localStorage.setItem('t', '1'); return localStorage.getItem('t') === '1'; });
+
+  function timed(name, url, opts, okFn) {
+    var t0 = Date.now(), ctl = window.AbortController ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 25000);
+    if (ctl) opts.signal = ctl.signal;
+    return fetch(url, opts).then(function (r) { return okFn ? okFn(r) : r; }).then(function (d) {
+      clearTimeout(timer); row(name, true, (Date.now() - t0) + ' میلی‌ثانیه' + (typeof d === 'string' ? ' — ' + d : ''));
+    }).catch(function (e) {
+      clearTimeout(timer); row(name, false, 'ناموفق بعد از ' + (Date.now() - t0) + ' میلی‌ثانیه (' + (e && e.name === 'AbortError' ? 'زمان تمام شد' : (e && e.message)) + ')');
+    });
+  }
+
+  var api = new URLSearchParams(location.search).get('api') || localStorage.getItem('api') || '';
+  var jobs = [
+    timed('دسترسی به google.com', 'https://www.google.com/generate_204', { mode: 'no-cors', cache: 'no-store' }),
+    timed('دسترسی به کتابخانه اکسل (cdnjs)', 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js', { mode: 'no-cors', cache: 'no-store' })
+  ];
+  if (api) {
+    jobs.push(timed('دسترسی به سرور برنامه', api, { method: 'POST', body: JSON.stringify({ action: 'ping' }) }, function (r) { return r.text(); }));
+  } else {
+    row('دسترسی به سرور برنامه', false, 'آدرس سرور مشخص نیست؛ لینک تست را با ?api=... باز کنید');
+  }
+
+  document.getElementById('copy').onclick = function () {
+    var t = document.getElementById('txt').textContent;
+    if (navigator.clipboard) navigator.clipboard.writeText(t).then(function () { alert('کپی شد'); });
+  };
+})();
+</script>
+</body>
+</html>

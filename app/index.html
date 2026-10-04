@@ -16,8 +16,18 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<div id="app"></div>
+<div id="app"><div id="boot" style="text-align:center;padding:40px 0;color:#64748b;font-family:Tahoma,sans-serif">در حال بارگذاری…</div></div>
 <div id="toast" role="status"></div>
+<script>
+window.addEventListener('error', function (e) {
+  var b = document.getElementById('boot');
+  if (b) b.innerHTML = 'برنامه بارگذاری نشد.<br>' + (e.message || '') + '<br><small dir="ltr">' + navigator.userAgent + '</small><br><a href="check.html">تست اتصال</a>';
+});
+setTimeout(function () {
+  var b = document.getElementById('boot');
+  if (b) b.innerHTML += '<br><br>بارگذاری طولانی شده است. <a href="check.html">تست اتصال</a>';
+}, 15000);
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="jalali.js"></script>
 <script src="app.js"></script>

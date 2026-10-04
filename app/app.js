@@ -58,13 +58,15 @@ let TOKEN = ls.get('token') || '';
 
 async function call(action, payload = {}) {
   if (API === 'demo') return demoCall(action, payload);
-  let res;
+  let res, j;
+  const ctl = window.AbortController ? new AbortController() : null;
+  const timer = setTimeout(() => ctl && ctl.abort(), 30000);
   try {
-    res = await fetch(API, { method: 'POST', body: JSON.stringify({ action, token: TOKEN, ...payload }) });
-  } catch {
-    throw new Error('ارتباط با سرور برقرار نشد (اینترنت یا آدرس را بررسی کنید)');
-  }
-  const j = await res.json();
+    res = await fetch(API, { method: 'POST', body: JSON.stringify({ action, token: TOKEN, ...payload }), signal: ctl ? ctl.signal : undefined });
+    j = await res.json();
+  } catch (e) {
+    throw new Error('ارتباط با سرور برقرار نشد. اینترنت را بررسی کنید؛ بدون VPN ممکن است دسترسی به گوگل مسدود باشد.');
+  } finally { clearTimeout(timer); }
   if (j.error) {
     if (j.error === 'auth') { logout(true); throw new Error('نشست منقضی شد، دوباره وارد شوید'); }
     throw new Error(j.error);
