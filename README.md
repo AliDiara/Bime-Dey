@@ -4,9 +4,15 @@ PWA فارسی برای نماینده و کارمندان: ایمپورت خر�
 دیتابیس = Google Sheet خود نماینده، با Google Apps Script به‌عنوان بک‌اند.
 
 ## ساختار
-- `backend/Code.gs` — کد Apps Script (API، کاربران، قفل همزمانی)
-- `app/` — برنامه (HTML/JS خالص، بدون build). `index.html`, `app.js`, `jalali.js`, `sw.js`, `manifest.json`
-- `sample/` — نمونه اکسل بیمه دی
+- `app/` — برنامه (HTML/JS خالص، بدون build): `index.html`, `app.js`, `jalali.js`, `sw.js`, `manifest.json`, `check.html` (تست اتصال)
+- `server/` — **سرور اختصاصی** (Node.js + SQLite، بدون وابستگی npm). همان API نسخه Apps Script را دارد و فایل‌های برنامه را هم می‌دهد. تست‌ها: `cd server && node --test test.js`
+- `deploy/` — راه‌اندازی روی VPS: `SERVER-SETUP.md` (راهنمای کامل)، `deploy.sh`، فایل systemd و Caddy
+- `backend/Code.gs` — نسخه قبلی بک‌اند روی Google Apps Script (هنوز کار می‌کند)
+- `sample/` — نمونه اکسل بیمه دی (داخل git نمی‌رود)
+
+## کدام بک‌اند؟
+- **سرور اختصاصی (پیشنهادی):** سریع (در تست محلی: ایمپورت ۷۹۴ پرونده ۴۴ میلی‌ثانیه، بارگذاری داده ۳۱ میلی‌ثانیه) و مستقل از گوگل که در ایران ناپایدار است. راهنما: `deploy/SERVER-SETUP.md`.
+- **Apps Script:** برای تست سریع بدون سرور. راه‌اندازی در همین فایل پایین‌تر.
 
 ## راه‌اندازی (یک‌بار، توسط نماینده)
 1. یک Google Sheet خالی بسازید.

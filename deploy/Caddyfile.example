@@ -1,0 +1,18 @@
+# هر دامنه یک بلوک. Caddy برای هر کدام خودکار گواهی SSL می‌گیرد.
+# پیش‌نیاز: رکورد A دامنه به IP سرور اشاره کند و پورت‌های ۸۰ و ۴۴۳ باز باشند.
+
+bime.example.ir {
+	encode gzip
+	reverse_proxy 127.0.0.1:3000
+}
+
+# پروژه دیگر روی همین سرور (پورت دیگر):
+# other.example.ir {
+# 	reverse_proxy 127.0.0.1:3001
+# }
+
+# اگر سرور به Let's Encrypt دسترسی نداشت، گواهی دستی بدهید:
+# bime.example.ir {
+# 	tls /etc/ssl/bime/fullchain.pem /etc/ssl/bime/privkey.pem
+# 	reverse_proxy 127.0.0.1:3000
+# }

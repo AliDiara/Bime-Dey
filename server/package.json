@@ -1,0 +1,13 @@
+{
+  "name": "bime-dey-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "سرور برنامه پیگیری تمدید بیمه (بدون وابستگی، Node.js + SQLite داخلی)",
+  "main": "server.js",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test.js",
+    "backup": "node backup.js"
+  }
+}

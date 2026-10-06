@@ -560,7 +560,7 @@ async function assign(no, to) {
 
 /* ================= مدیریت ================= */
 function renderAdmin() {
-  const link = API && API !== 'demo' ? `${location.origin}${location.pathname}?api=${encodeURIComponent(API)}` : '';
+  const link = !API || API === 'demo' ? '' : API.startsWith('/') ? location.origin + location.pathname : `${location.origin}${location.pathname}?api=${encodeURIComponent(API)}`;
   const welcome = S.data.policies.length ? '' : `<div class="card" style="margin-bottom:10px"><b>خوش آمدید 👋</b><div class="meta" style="display:block">شروع کار در دو قدم: ۱) فایل اکسل بیمه دی را بارگذاری کنید. ۲) کارمندان را در بخش «کاربران» بسازید و نام کاربری و رمزشان را بدهید.</div></div>`;
   $('#view').innerHTML = `${welcome}<div class="two">
     <div class="card"><h2 style="margin-top:0">ایمپورت خروجی بیمه دی</h2>
@@ -692,6 +692,13 @@ async function boot(preData) {
     API = qp; ls.set('api', qp); TOKEN = ''; ls.del('token'); ls.del('cache');
   }
   if (qp) history.replaceState(null, '', location.pathname);
+  if (!API) {
+    // اگر برنامه از خود سرور اختصاصی باز شده باشد، /api همان‌جاست و آدرسی لازم نیست
+    try {
+      const r = await fetch('/api', { method: 'POST', body: JSON.stringify({ action: 'ping' }) });
+      if ((await r.json()).ok) { API = '/api'; ls.set('api', API); }
+    } catch (e) { /* سرور هم‌مبدأ وجود ندارد */ }
+  }
   if (!API || !TOKEN && API !== 'demo') return renderLogin();
   if (API === 'demo' && !ls.get('demo_me')) return renderLogin();
   const first = () => {

@@ -1,0 +1,28 @@
+[Unit]
+Description=Bime Dey renewal follow-up server
+After=network.target
+
+[Service]
+Type=simple
+User=bime
+Group=bime
+WorkingDirectory=/opt/bime-dey
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3000
+Environment=DB_PATH=/opt/bime-dey/data/bime.db
+Environment=STATIC_DIR=/opt/bime-dey/public
+# اختیاری: ثبت‌نام نماینده جدید فقط با این کد. برای باز بودن ثبت‌نام این خط را حذف کنید.
+# Environment=REGISTER_CODE=یک-کد-دلخواه
+ExecStart=/opt/node/bin/node /opt/bime-dey/server.js
+Restart=always
+RestartSec=3
+# محدودسازی دسترسی سرویس
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/bime-dey/data
+
+[Install]
+WantedBy=multi-user.target

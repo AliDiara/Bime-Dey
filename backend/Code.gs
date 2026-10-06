@@ -314,14 +314,15 @@ function detectRenewals_(me, rows, now) {
     var used = {};
     for (var qi = 1; qi < g.length; qi++) {
       var q = g[qi], best = -1, bestDiff = 1e9;
+      // نزدیک‌ترین بیمه‌نامه قبلی به یک سال فاصله، حتی اگر قبلاً بسته شده باشد
       for (var pi = 0; pi < qi; pi++) {
-        var p = g[pi];
-        if (used[pi] || closed.indexOf(p.status) >= 0) continue;
-        var gap = dayNum_(q.expiry) - dayNum_(p.expiry);
+        if (used[pi]) continue;
+        var gap = dayNum_(q.expiry) - dayNum_(g[pi].expiry);
         if (gap >= 250 && gap <= 450 && Math.abs(gap - 365) < bestDiff) { best = pi; bestDiff = Math.abs(gap - 365); }
       }
       if (best < 0) continue;
       used[best] = true;
+      if (closed.indexOf(g[best].status) >= 0) continue;
       var old = g[best];
       var note = 'تمدید خودکار: بیمه‌نامه جدید ' + q.policyNo;
       old.status = 'renewed';
