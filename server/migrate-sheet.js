@@ -64,7 +64,7 @@ const agencies = read('Agencies');
 if (!agencies.length && read('Users').length) agencies.push({ agencyId: 'a1', name: 'نمایندگی اول', createdAt: new Date().toISOString() });
 console.log('agencies:', load('agencies', agencies));
 console.log('users:', load('users', read('Users'), r => r.username ? ({
-  ...ag(r), username: r.username.trim().toLowerCase(), algo: 'sha256', active: r.active === 'false' || r.active === 'FALSE' ? 0 : 1
+  ...ag(r), username: r.username.trim().toLowerCase(), algo: 'sha256', mustChange: 0, lastLogin: '', active: r.active === 'false' || r.active === 'FALSE' ? 0 : 1
 }) : null));
 console.log('policies:', load('policies', read('Policies'), r => r.policyNo ? ag(r) : null));
 console.log('actions:', load('actions', read('Actions'), r => r.id ? ag(r) : null));

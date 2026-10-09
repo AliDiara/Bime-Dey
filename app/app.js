@@ -279,10 +279,11 @@ async function doAuth(action) {
 function renderShell() {
   const tabs = [['dash', '📊', 'داشبورد'], ['list', '📋', 'تمدیدها'], ['follow', '📞', 'پیگیری امروز']];
   if (isAdmin()) tabs.push(['admin', '⚙️', 'مدیریت']);
+  if (S.user.role === 'super') tabs.splice(0, tabs.length, ['platform', '🛡️', 'پلتفرم']);
   $('#app').innerHTML = `
     <div class="top"><h1>${esc(S.agency?.name || 'پیگیری تمدید بیمه')}</h1>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="who">${esc(S.user.name)}${isAdmin() ? ' (مدیر)' : ''}</span>
-      <span id="sync" class="who" style="visibility:hidden">⟳ در حال بروزرسانی…</span><button class="btn sm" data-act="refresh">⟳ بروزرسانی</button><button class="btn sm" data-act="logout">خروج</button></div></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="who">${esc(S.user.name)}${isAdmin() ? ' (مدیر)' : S.user.role === 'super' ? ' (مالک)' : ''}</span>
+      <span id="sync" class="who" style="visibility:hidden">⟳ در حال بروزرسانی…</span><button class="btn sm" data-act="refresh">⟳ بروزرسانی</button><button class="btn sm" data-act="changePw">🔑 رمز</button><button class="btn sm" data-act="logout">خروج</button></div></div>
     <div class="nav">${tabs.map(t => `<button data-tab="${t[0]}"><span class="ic">${t[1]}</span>${t[2]}</button>`).join('')}</div>
     <div id="view"></div>`;
   renderView();
@@ -293,7 +294,103 @@ function renderView() {
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === active));
   if (S.tab === 'dash') renderDash();
   else if (S.tab === 'admin') renderAdmin();
+  else if (S.tab === 'platform') renderPlatform();
   else renderListView();
+}
+
+/* ================= رمز عبور ================= */
+function openChangePw(forced) {
+  closeModal();
+  const ov = document.createElement('div');
+  ov.className = 'ov';
+  if (forced) ov.dataset.forced = '1';
+  ov.innerHTML = `<div class="modal">
+    <h3>${forced ? 'رمز جدید انتخاب کنید' : 'تغییر رمز عبور'}</h3>
+    ${forced ? '<p class="meta" style="display:block">رمز شما را مدیر تعیین یا ریست کرده است. برای امنیت، رمز دلخواه خودتان را بگذارید.</p>' : ''}
+    <div class="f"><label>رمز فعلی</label><input id="pw_old" type="password" dir="ltr" autocomplete="current-password"></div>
+    <div class="f"><label>رمز جدید (حداقل ۶ کاراکتر)</label><input id="pw_new" type="password" dir="ltr" autocomplete="new-password"></div>
+    <div class="f"><label>تکرار رمز جدید</label><input id="pw_new2" type="password" dir="ltr" autocomplete="new-password"></div>
+    <div class="err" id="pw_err"></div>
+    <div class="acts"><button class="btn pri" data-act="savePw">ذخیره</button>${forced ? '<button class="btn" data-act="logout">خروج</button>' : '<button class="btn" data-act="close">انصراف</button>'}</div></div>`;
+  document.body.appendChild(ov);
+}
+
+async function savePw(btn) {
+  const o = $('#pw_old').value, n = $('#pw_new').value, n2 = $('#pw_new2').value;
+  const err = m => { $('#pw_err').textContent = m; };
+  if (n.length < 6) return err('رمز جدید حداقل ۶ کاراکتر باشد');
+  if (n !== n2) return err('تکرار رمز با رمز جدید یکی نیست');
+  btn.disabled = true;
+  try {
+    await call('changePassword', { oldPassword: o, newPassword: n });
+    S.user.mustChange = false;
+    try { const c = JSON.parse(ls.get('cache') || 'null'); if (c && c.me) { c.me.mustChange = false; ls.set('cache', JSON.stringify(c)); } } catch (e) { /* ignore */ }
+    closeModal();
+    toast('رمز تغییر کرد');
+  } catch (e) { err(e.message); btn.disabled = false; }
+}
+
+/* ================= پنل پلتفرم (مالک) ================= */
+const fmtDate = iso => iso ? Jal.format(Jal.isoToJdn(iso)) : '—';
+const ago = iso => { if (!iso) return ''; const d = S.today - Jal.isoToJdn(iso); return d <= 0 ? 'امروز' : faNum(d) + ' روز پیش'; };
+
+async function renderPlatform() {
+  $('#view').innerHTML = '<div class="empty">در حال بارگذاری…</div>';
+  try { S.platform = await call('platformOverview'); } catch (e) { $('#view').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  S.pf = S.pf || { q: '', agency: '' };
+  drawPlatform();
+}
+
+function drawPlatform() {
+  const d = S.platform, t = d.totals;
+  const kpi = (cls, ic, n, l) => `<div class="card kpi2 ${cls}"><span class="ico">${ic}</span><div class="n">${faNum(n)}</div><div class="l">${l}</div></div>`;
+  $('#view').innerHTML = `
+    <div class="dhead"><div><div class="hi">پنل مدیریت پلتفرم</div><div class="meta">فقط آمار و مدیریت حساب‌ها. پرونده‌ها و شماره مشتری‌ها نمایش داده نمی‌شود.</div></div></div>
+    <div class="grid kpis">${kpi('k-blue', '🏢', t.agencies, 'نمایندگی')}${kpi('k-org', '👥', t.users, 'کاربر (مدیر و کارمند)')}${kpi('k-good', '📄', t.policies, 'پرونده')}${kpi('k-blue', '✍️', t.actions, 'اقدام ثبت‌شده')}</div>
+    <div class="card" style="margin-top:12px;overflow:auto"><div class="ct">نمایندگی‌ها</div>
+      <table><tr><th>نمایندگی</th><th>ثبت‌نام</th><th>کاربر</th><th>پرونده</th><th>اقدام</th><th>آخرین ورود</th><th>آخرین اقدام</th></tr>
+      ${d.agencies.map(a => `<tr><td><b>${esc(a.name)}</b></td><td>${fmtDate(a.createdAt)}</td><td>${faNum(a.activeUsers)} از ${faNum(a.users)}</td><td>${faNum(a.policies)}</td><td>${faNum(a.actions)}</td><td>${fmtDate(a.lastLogin)}<div class="meta">${ago(a.lastLogin)}</div></td><td>${fmtDate(a.lastAction)}<div class="meta">${ago(a.lastAction)}</div></td></tr>`).join('') || '<tr><td colspan="7" class="empty">هنوز نمایندگی‌ای نیست</td></tr>'}</table></div>
+    <h2>کاربران</h2>
+    <div class="filters"><input id="pq" type="search" placeholder="جستجو: نام، نام کاربری، نمایندگی" value="${esc(S.pf.q)}">
+      <select data-pfagency><option value="">همه نمایندگی‌ها</option>${d.agencies.map(a => `<option value="${esc(a.agencyId)}" ${S.pf.agency === a.agencyId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></div>
+    <div id="pusers"></div>`;
+  drawPfUsers();
+}
+
+function drawPfUsers() {
+  const q = normText(S.pf.q).toLowerCase();
+  const list = S.platform.users.filter(u => (!S.pf.agency || u.agencyId === S.pf.agency) && (!q || `${u.name} ${u.username} ${u.agencyName}`.toLowerCase().includes(q)));
+  $('#pusers').innerHTML = `<div class="meta" style="margin-bottom:6px">${faNum(list.length)} کاربر</div><div class="card" style="overflow:auto"><table>
+    <tr><th>نام</th><th>نام کاربری</th><th>نمایندگی</th><th>نقش</th><th>وضعیت</th><th>آخرین ورود</th><th></th></tr>
+    ${list.map(u => `<tr><td><b>${esc(u.name)}</b></td><td dir="ltr" style="text-align:right">${esc(u.username)}</td><td>${esc(u.agencyName)}</td><td>${u.role === 'admin' ? 'مدیر' : 'کارمند'}</td>
+      <td><span class="badge ${u.active ? 'b-good' : 'b-mute'}">${u.active ? 'فعال' : 'غیرفعال'}</span>${u.mustChange ? ' <span class="badge b-warn">رمز موقت</span>' : ''}</td>
+      <td>${fmtDate(u.lastLogin)}<div class="meta">${ago(u.lastLogin)}</div></td>
+      <td class="acts"><button class="btn sm" data-pf-reset="${esc(u.username)}">ریست رمز</button><button class="btn sm" data-pf-toggle="${esc(u.username)}">${u.active ? 'غیرفعال' : 'فعال'}</button></td></tr>`).join('') || '<tr><td colspan="7" class="empty">کاربری پیدا نشد</td></tr>'}</table></div>`;
+}
+
+async function pfReset(username) {
+  const u = S.platform.users.find(x => x.username === username);
+  if (!confirm(`رمز «${u.name}» (${u.username}) ریست شود؟\nاز همه دستگاه‌ها خارج می‌شود و رمز قبلی کار نمی‌کند.`)) return;
+  try {
+    const r = await call('platformResetPassword', { username });
+    u.mustChange = true;
+    const msg = `سلام ${u.name}\nرمز موقت شما برای برنامه پیگیری تمدید بیمه:\nنام کاربری: ${u.username}\nرمز موقت: ${r.tempPassword}\nآدرس: ${location.origin}\nبعد از ورود، از شما می‌خواهد رمز دلخواه بگذارید.`;
+    closeModal();
+    const ov = document.createElement('div');
+    ov.className = 'ov';
+    ov.innerHTML = `<div class="modal"><h3>رمز موقت ساخته شد</h3>
+      <p class="meta" style="display:block">این رمز فقط همین یک بار نمایش داده می‌شود. کاربر از همه دستگاه‌ها خارج شد.</p>
+      <code class="url" style="font-size:20px;text-align:center">${esc(r.tempPassword)}</code>
+      <div class="f"><label>پیام آماده برای ارسال به کاربر</label><textarea id="tmpmsg" readonly>${esc(msg)}</textarea></div>
+      <div class="acts"><button class="btn pri" data-act="copyMsg">کپی پیام</button><button class="btn" data-act="close">بستن</button></div></div>`;
+    document.body.appendChild(ov);
+    drawPfUsers();
+  } catch (e) { toast(e.message); }
+}
+
+async function pfToggle(username) {
+  const u = S.platform.users.find(x => x.username === username);
+  try { await call('platformSetActive', { username, active: !u.active }); u.active = !u.active; drawPfUsers(); toast(u.active ? 'فعال شد' : 'غیرفعال شد'); } catch (e) { toast(e.message); }
 }
 
 /* ================= داشبورد ================= */
@@ -630,8 +727,8 @@ async function onFile(e) {
 
 /* ================= رویدادها ================= */
 document.addEventListener('click', async e => {
-  const t = e.target.closest('[data-act],[data-mode],[data-tab],[data-range],[data-open],[data-go],[data-fu],[data-user-pw],[data-user-toggle]');
-  if (!t) { if (e.target.classList.contains('ov')) closeModal(); return; }
+  const t = e.target.closest('[data-act],[data-mode],[data-tab],[data-range],[data-open],[data-go],[data-fu],[data-user-pw],[data-user-toggle],[data-pf-reset],[data-pf-toggle]');
+  if (!t) { if (e.target.classList.contains('ov') && !e.target.dataset.forced) closeModal(); return; }
   const d = t.dataset;
   if (d.tab) {
     if (d.tab === 'follow') { S.tab = 'list'; S.f.range = 'followup'; S.f.status = 'open'; }
@@ -648,6 +745,8 @@ document.addEventListener('click', async e => {
     if (pw) try { await call('saveUser', { username: d.userPw, password: pw }); toast('رمز تغییر کرد'); } catch (er) { toast(er.message); }
     return;
   }
+  if (d.pfReset) return pfReset(d.pfReset);
+  if (d.pfToggle) return pfToggle(d.pfToggle);
   if (d.userToggle) {
     const u = S.data.users.find(x => x.username === d.userToggle);
     try { const r = await call('saveUser', { username: u.username, active: !u.active }); S.data.users = r.users; enrich(); renderAdmin(); } catch (er) { toast(er.message); }
@@ -667,6 +766,9 @@ document.addEventListener('click', async e => {
     case 'take': return assign(t.closest('.ov').dataset.no, S.user.username);
     case 'release': return assign(t.closest('.ov').dataset.no, '');
     case 'copyLink': try { await navigator.clipboard.writeText(t.previousElementSibling.textContent); toast('کپی شد'); } catch { toast('کپی نشد'); } return;
+    case 'changePw': return openChangePw(false);
+    case 'savePw': return savePw(t);
+    case 'copyMsg': try { await navigator.clipboard.writeText($('#tmpmsg').value); toast('کپی شد'); } catch (er) { toast('کپی نشد'); } return;
     case 'addUser': {
       try {
         const r = await call('saveUser', { username: $('#nu_un').value.trim(), name: $('#nu_name').value.trim(), password: $('#nu_pw').value, role: 'employee' });
@@ -677,11 +779,13 @@ document.addEventListener('click', async e => {
 });
 
 document.addEventListener('input', e => {
+  if (e.target.id === 'pq') { S.pf.q = e.target.value; drawPfUsers(); }
   if (e.target.id === 'q') { S.f.q = e.target.value; S.limit = 60; renderList(); }
 });
 document.addEventListener('change', e => {
   const t = e.target;
   if (t.dataset.f) { S.f[t.dataset.f] = t.value; S.limit = 60; renderList(); }
+  if (t.dataset.pfagency !== undefined) { S.pf.agency = t.value; drawPfUsers(); }
   if (t.dataset.scope !== undefined) { S.scope = t.value; renderDash(); }
 });
 
@@ -704,7 +808,9 @@ async function boot(preData) {
   const first = () => {
     S.scope = '';
     if (S.fresh) { S.tab = 'admin'; S.fresh = false; }
+    if (S.user.role === 'super') S.tab = 'platform';
     renderShell();
+    if (S.user.mustChange) openChangePw(true);
   };
   if (preData) { applyData(preData); return first(); }
   // داده ذخیره‌شده فوراً نشان داده می‌شود و نسخه تازه در پس‌زمینه می‌آید
@@ -713,7 +819,7 @@ async function boot(preData) {
     applyData(cached);
     first();
     setSync(true);
-    try { await load(); refreshView(); } catch (e) { if (TOKEN) toast('ارتباط برقرار نشد؛ داده ذخیره‌شده نمایش داده می‌شود'); }
+    try { await load(); if (!S.user.mustChange) document.querySelectorAll('.ov[data-forced]').forEach(o => o.remove()); refreshView(); } catch (e) { if (TOKEN) toast('ارتباط برقرار نشد؛ داده ذخیره‌شده نمایش داده می‌شود'); }
     setSync(false);
     return;
   }

@@ -154,6 +154,68 @@ test('ثبت‌نام و گذرواژه قدیمی sha256 (مهاجرت از She
   assert.equal((await api({ action: 'login', username: 'legacy', password: 'old-pass' })).ok, true);
 });
 
+test('پنل پلتفرم: حساب مالک، آمار، ریست رمز', async () => {
+  const { spawnSync } = require('node:child_process');
+  const cli = (...args) => spawnSync(process.execPath, [path.join(__dirname, 'admin.js'), ...args], { env: { ...process.env, DB_PATH: DB }, encoding: 'utf8' });
+  const created = cli('create-super', 'Owner');
+  const tmpPw = /رمز موقت:\s+(\S+)/.exec(created.stdout)[1];
+  assert.equal(tmpPw.length, 10);
+  assert.match(cli('create-super', 'owner').stderr, /وجود دارد/);
+
+  // مالک با گزینه «مدیر» وارد می‌شود و باید رمز را عوض کند
+  const S = await api({ action: 'login', username: 'owner', password: tmpPw, role: 'admin' });
+  assert.equal(S.ok, true);
+  assert.equal(S.user.role, 'super'); assert.equal(S.user.mustChange, true);
+  assert.deepEqual(S.data.policies, []);   // هیچ داده مشتری‌ای برای مالک نیست
+  assert.equal((await api({ action: 'changePassword', token: S.token, oldPassword: 'bad', newPassword: 'newpass1' })).error, 'رمز فعلی اشتباه است');
+  assert.match((await api({ action: 'changePassword', token: S.token, oldPassword: tmpPw, newPassword: '123' })).error, /۶/);
+  assert.equal((await api({ action: 'changePassword', token: S.token, oldPassword: tmpPw, newPassword: 'owner-pass-1' })).ok, true);
+  const S2 = await api({ action: 'login', username: 'owner', password: 'owner-pass-1' });
+  assert.equal(S2.user.mustChange, false);
+
+  // آمار
+  const ov = await api({ action: 'platformOverview', token: S2.token });
+  assert.ok(ov.totals.agencies >= 2 && ov.totals.users >= 4 && ov.totals.policies > 0);
+  assert.ok(ov.agencies.find(a => a.name === 'نمایندگی الف').policies >= 2);
+  assert.ok(!ov.users.some(u => u.role === 'super'));
+  assert.ok(!JSON.stringify(ov).includes('0912'), 'شماره مشتری نباید در پنل پلتفرم بیاید');
+
+  // دیگران دسترسی ندارند
+  const adm = await api({ action: 'login', username: 'agent_a', password: '123456' });
+  for (const action of ['platformOverview', 'platformResetPassword', 'platformSetActive'])
+    assert.match((await api({ action, token: adm.token, username: 'ali' })).error, /دسترسی/);
+
+  // ریست رمز: رمز موقت، اجبار به تغییر، بستن نشست‌های قبلی
+  const before = await api({ action: 'login', username: 'agent_a', password: '123456' });
+  const rs = await api({ action: 'platformResetPassword', token: S2.token, username: 'Agent_A' });
+  assert.equal(rs.tempPassword.length, 10);
+  assert.equal((await api({ action: 'getData', token: before.token })).error, 'auth');
+  assert.match((await api({ action: 'login', username: 'agent_a', password: '123456' })).error, /اشتباه/);
+  const again = await api({ action: 'login', username: 'agent_a', password: rs.tempPassword });
+  assert.equal(again.ok, true); assert.equal(again.user.mustChange, true);
+  assert.equal((await api({ action: 'changePassword', token: again.token, oldPassword: rs.tempPassword, newPassword: 'my-new-pass' })).ok, true);
+  assert.equal((await api({ action: 'login', username: 'agent_a', password: 'my-new-pass' })).user.mustChange, false);
+  assert.match((await api({ action: 'platformResetPassword', token: S2.token, username: 'owner' })).error, /پیدا نشد/);
+
+  // غیرفعال/فعال از پنل
+  await api({ action: 'platformSetActive', token: S2.token, username: 'ali', active: false });
+  assert.match((await api({ action: 'login', username: 'ali', password: '5678' })).error, /اشتباه/);
+  await api({ action: 'platformSetActive', token: S2.token, username: 'ali', active: true });
+  assert.equal((await api({ action: 'login', username: 'ali', password: '5678' })).ok, true);
+
+  // کارمندی که مدیر ساخته، باید رمز را عوض کند
+  const mk = await api({ action: 'saveUser', token: (await api({ action: 'login', username: 'agent_a', password: 'my-new-pass' })).token, username: 'newbie', name: 'تازه', password: '1234' });
+  assert.equal(mk.ok, true);
+  assert.equal((await api({ action: 'login', username: 'newbie', password: '1234' })).user.mustChange, true);
+
+  // ثبت در گزارش
+  const { DatabaseSync } = require('node:sqlite');
+  const d = new DatabaseSync(DB);
+  const acts = d.prepare('SELECT action, actor FROM audit ORDER BY rowid').all().map(r => r.actor + ':' + r.action);
+  d.close();
+  assert.ok(acts.includes('cli:create-super') && acts.includes('owner:reset-password') && acts.includes('owner:deactivate'));
+});
+
 test('محدودیت تلاش ورود', async () => {
   let last;
   for (let i = 0; i < 12; i++) last = await api({ action: 'login', username: 'agent_b', password: 'wrong' + i });

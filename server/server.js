@@ -55,6 +55,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_actions_id ON actions (agencyId, id);
 CREATE TABLE IF NOT EXISTS sessions (tokenHash TEXT PRIMARY KEY, username TEXT NOT NULL, exp INTEGER NOT NULL);
 `);
 
+// مهاجرت دیتابیس‌های قبلی
+const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+if (!userCols.includes('mustChange')) db.exec('ALTER TABLE users ADD COLUMN mustChange INTEGER NOT NULL DEFAULT 0');
+if (!userCols.includes('lastLogin')) db.exec("ALTER TABLE users ADD COLUMN lastLogin TEXT NOT NULL DEFAULT ''");
+db.exec(`CREATE TABLE IF NOT EXISTS audit (
+  at TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '')`);
+const audit = (actor, action, target = '', detail = '') =>
+  db.prepare('INSERT INTO audit (at, actor, action, target, detail) VALUES (?, ?, ?, ?, ?)').run(new Date().toISOString(), actor, action, target, detail);
+
 const q = {
   userByName: db.prepare('SELECT * FROM users WHERE username = ?'),
   usersByAgency: db.prepare('SELECT username, name, role, active FROM users WHERE agencyId = ? ORDER BY rowid'),
@@ -93,6 +102,11 @@ function checkPassword(u, pw) {
   }
   return false;
 }
+// رمز موقت تصادفی بدون حروف مشابه (0/O و 1/l/I)
+function tempPassword() {
+  const abc = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  return Array.from(crypto.randomBytes(10), b => abc[b % abc.length]).join('');
+}
 const normUser = u => String(u || '').trim().toLowerCase();
 const tokenHash = t => crypto.createHash('sha256').update(String(t)).digest('hex');
 
@@ -108,7 +122,7 @@ function authUser(token) {
   if (!u || !u.active) fail('auth');
   return u;
 }
-const publicUser = u => ({ username: u.username, name: u.name, role: u.role, active: !!u.active });
+const publicUser = u => ({ username: u.username, name: u.name, role: u.role, active: !!u.active, mustChange: !!u.mustChange });
 
 const failures = new Map(); // محدودیت تلاش ورود ناموفق به‌ازای IP
 function checkRate(ip) {
@@ -121,7 +135,7 @@ const noteFail = ip => failures.set(ip, [...(failures.get(ip) || []), Date.now()
 
 /* ================= منطق ================= */
 function getData(me) {
-  const ag = q.agency.get(me.agencyId);
+  const ag = me.role === 'super' ? { name: 'مدیریت پلتفرم' } : q.agency.get(me.agencyId);
   return {
     ok: true,
     me: publicUser(me),
@@ -152,6 +166,7 @@ function register(req) {
     q.addAgency.run(id, agencyName, new Date().toISOString());
     q.addUser.run(username, name, 'admin', p.algo, p.salt, p.hash, id);
   });
+  db.prepare('UPDATE users SET lastLogin = ? WHERE username = ?').run(new Date().toISOString(), username);
   const me = q.userByName.get(username);
   return { ok: true, token: newSession(username), user: publicUser(me), data: getData(me) };
 }
@@ -163,9 +178,10 @@ function login(req, ip) {
     noteFail(ip);
     fail('نام کاربری یا رمز اشتباه است');
   }
-  if (req.role && req.role !== u.role) {
+  if (req.role && req.role !== u.role && !(u.role === 'super' && req.role === 'admin')) {
     fail(u.role === 'admin' ? 'این حساب «مدیر» است؛ نقش مدیر را انتخاب کنید' : 'این حساب «کارمند» است؛ نقش کارمند را انتخاب کنید');
   }
+  db.prepare('UPDATE users SET lastLogin = ? WHERE username = ?').run(new Date().toISOString(), u.username);
   if (u.algo !== 'scrypt') { // ارتقای هش قدیمی بعد از اولین ورود موفق
     const p = newPassword(String(req.password));
     db.prepare('UPDATE users SET algo = ?, salt = ?, hash = ? WHERE username = ?').run(p.algo, p.salt, p.hash, u.username);
@@ -293,6 +309,7 @@ function saveUser(me, req) {
     if (!req.password || String(req.password).length < 4) fail('رمز عبور حداقل ۴ کاراکتر باشد');
     const p = newPassword(String(req.password));
     q.addUser.run(username, String(req.name || username).trim(), req.role === 'admin' ? 'admin' : 'employee', p.algo, p.salt, p.hash, me.agencyId);
+    db.prepare('UPDATE users SET mustChange = 1 WHERE username = ?').run(username);
   } else {
     if (cur.agencyId !== me.agencyId) fail('این نام کاربری قبلاً گرفته شده است');
     const self = username === me.username;
@@ -303,7 +320,7 @@ function saveUser(me, req) {
       if (req.password) {
         if (String(req.password).length < 4) fail('رمز عبور حداقل ۴ کاراکتر باشد');
         const p = newPassword(String(req.password));
-        db.prepare('UPDATE users SET algo = ?, salt = ?, hash = ? WHERE username = ?').run(p.algo, p.salt, p.hash, username);
+        db.prepare('UPDATE users SET algo = ?, salt = ?, hash = ?, mustChange = ? WHERE username = ?').run(p.algo, p.salt, p.hash, self ? 0 : 1, username);
         db.prepare('DELETE FROM sessions WHERE username = ?').run(username);
       }
       if (req.active !== undefined) {
@@ -315,6 +332,70 @@ function saveUser(me, req) {
   return { ok: true, users: q.usersByAgency.all(me.agencyId).map(publicUser) };
 }
 
+// تغییر رمز توسط خود کاربر (و بعد از ریست اجباری است)
+function changePassword(me, req) {
+  const next = String(req.newPassword || '');
+  if (!checkPassword(me, String(req.oldPassword || ''))) fail('رمز فعلی اشتباه است');
+  if (next.length < 6) fail('رمز جدید حداقل ۶ کاراکتر باشد');
+  if (next === String(req.oldPassword)) fail('رمز جدید باید با رمز فعلی فرق کند');
+  const p = newPassword(next);
+  db.prepare('UPDATE users SET algo = ?, salt = ?, hash = ?, mustChange = 0 WHERE username = ?').run(p.algo, p.salt, p.hash, me.username);
+  db.prepare('DELETE FROM sessions WHERE username = ? AND tokenHash <> ?').run(me.username, tokenHash(req.token));
+  return { ok: true };
+}
+
+/* ================= پنل پلتفرم (فقط super) =================
+ * فقط آمار و مدیریت حساب‌ها؛ هیچ پرونده یا شماره مشتری‌ای برنمی‌گرداند. */
+const needSuper = me => { if (me.role !== 'super') fail('دسترسی ندارید'); };
+
+function platformOverview(me) {
+  needSuper(me);
+  const agencies = db.prepare(`
+    SELECT a.agencyId, a.name, a.createdAt,
+      (SELECT COUNT(*) FROM users u WHERE u.agencyId = a.agencyId) AS users,
+      (SELECT COUNT(*) FROM users u WHERE u.agencyId = a.agencyId AND u.active = 1) AS activeUsers,
+      (SELECT COUNT(*) FROM policies p WHERE p.agencyId = a.agencyId) AS policies,
+      (SELECT COUNT(*) FROM actions x WHERE x.agencyId = a.agencyId) AS actions,
+      (SELECT COALESCE(MAX(x.at), '') FROM actions x WHERE x.agencyId = a.agencyId) AS lastAction,
+      (SELECT COALESCE(MAX(u.lastLogin), '') FROM users u WHERE u.agencyId = a.agencyId) AS lastLogin
+    FROM agencies a ORDER BY a.createdAt`).all();
+  const users = db.prepare(`
+    SELECT u.username, u.name, u.role, u.active, u.agencyId, COALESCE(a.name, '') AS agencyName, u.lastLogin, u.mustChange
+    FROM users u LEFT JOIN agencies a ON a.agencyId = u.agencyId
+    WHERE u.role <> 'super' ORDER BY a.createdAt, u.rowid`).all()
+    .map(u => ({ ...u, active: !!u.active, mustChange: !!u.mustChange }));
+  const sum = k => agencies.reduce((n, a) => n + a[k], 0);
+  return { ok: true, agencies, users, totals: { agencies: agencies.length, users: users.length, policies: sum('policies'), actions: sum('actions') } };
+}
+
+function platformResetPassword(me, req) {
+  needSuper(me);
+  const username = normUser(req.username);
+  const u = q.userByName.get(username);
+  if (!u || u.role === 'super') fail('کاربر پیدا نشد');
+  const temp = tempPassword();
+  const p = newPassword(temp);
+  tx(() => {
+    db.prepare('UPDATE users SET algo = ?, salt = ?, hash = ?, mustChange = 1 WHERE username = ?').run(p.algo, p.salt, p.hash, username);
+    db.prepare('DELETE FROM sessions WHERE username = ?').run(username);
+    audit(me.username, 'reset-password', username);
+  });
+  return { ok: true, username, tempPassword: temp };
+}
+
+function platformSetActive(me, req) {
+  needSuper(me);
+  const username = normUser(req.username);
+  const u = q.userByName.get(username);
+  if (!u || u.role === 'super') fail('کاربر پیدا نشد');
+  tx(() => {
+    db.prepare('UPDATE users SET active = ? WHERE username = ?').run(req.active ? 1 : 0, username);
+    if (!req.active) db.prepare('DELETE FROM sessions WHERE username = ?').run(username);
+    audit(me.username, req.active ? 'activate' : 'deactivate', username);
+  });
+  return { ok: true };
+}
+
 function handle(req, ip) {
   switch (req.action) {
     case 'ping': return { ok: true, requiresCode: !!REGISTER_CODE };
@@ -324,6 +405,10 @@ function handle(req, ip) {
   const me = authUser(req.token);
   switch (req.action) {
     case 'getData': return getData(me);
+    case 'changePassword': return changePassword(me, req);
+    case 'platformOverview': return platformOverview(me);
+    case 'platformResetPassword': return platformResetPassword(me, req);
+    case 'platformSetActive': return platformSetActive(me, req);
     case 'import': if (me.role !== 'admin') fail('دسترسی ندارید'); return importRows(me, req.rows);
     case 'addAction': return addAction(me, req);
     case 'assign': return assign(me, req.policyNos, req.to);
@@ -430,4 +515,4 @@ if (require.main === module) {
   process.on('SIGINT', stop);
 }
 
-module.exports = { server, db };
+module.exports = { server, db, newPassword, tempPassword, audit };
