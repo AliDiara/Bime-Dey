@@ -24,7 +24,7 @@ class AppError extends Error {}
 const fail = msg => { throw new AppError(msg); };
 
 /* ================= دیتابیس ================= */
-const P_COLS = ['policyNo', 'branch', 'internalCode', 'expiry', 'insuredName', 'insuredCode', 'mobile', 'phone',
+const P_COLS = ['policyNo', 'branch', 'internalCode', 'expiry', 'issueDate', 'insuredName', 'insuredCode', 'mobile', 'phone',
   'address', 'premium', 'issuer', 'supervisor', 'referrer', 'assignedTo', 'status', 'lastActionAt',
   'nextFollowUp', 'finalPremium', 'lastNote', 'importedAt'];
 const A_COLS = ['id', 'policyNo', 'user', 'type', 'note', 'nextFollowUp', 'amount', 'at'];
@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS sessions (tokenHash TEXT PRIMARY KEY, username TEXT N
 `);
 
 // مهاجرت دیتابیس‌های قبلی
+const policyCols = db.prepare('PRAGMA table_info(policies)').all().map(c => c.name);
+if (!policyCols.includes('issueDate')) db.exec("ALTER TABLE policies ADD COLUMN issueDate TEXT NOT NULL DEFAULT ''");
+db.exec(`CREATE TABLE IF NOT EXISTS imports (
+  agencyId TEXT NOT NULL, fileHash TEXT NOT NULL, fileName TEXT NOT NULL DEFAULT '', at TEXT NOT NULL,
+  added INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (agencyId, fileHash))`);
 const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
 if (!userCols.includes('mustChange')) db.exec('ALTER TABLE users ADD COLUMN mustChange INTEGER NOT NULL DEFAULT 0');
 if (!userCols.includes('lastLogin')) db.exec("ALTER TABLE users ADD COLUMN lastLogin TEXT NOT NULL DEFAULT ''");
@@ -142,7 +147,8 @@ function getData(me) {
     agency: { id: me.agencyId, name: ag ? ag.name : '' },
     policies: q.policies.all(me.agencyId).map(({ agencyId, ...p }) => p),
     actions: q.actions.all(me.agencyId).map(({ agencyId, ...a }) => a),
-    users: q.usersByAgency.all(me.agencyId).map(publicUser)
+    users: q.usersByAgency.all(me.agencyId).map(publicUser),
+    imports: db.prepare('SELECT fileName, at, added, updated FROM imports WHERE agencyId = ? ORDER BY at DESC LIMIT 10').all(me.agencyId)
   };
 }
 
@@ -232,29 +238,45 @@ function detectRenewals(agencyId, now) {
   return count;
 }
 
-function importRows(me, rows) {
+function importRows(me, req) {
+  const rows = req.rows;
   if (!Array.isArray(rows)) fail('داده نامعتبر');
+  const fileHash = String(req.fileHash || '');
+  const fileName = String(req.fileName || '').slice(0, 200);
+  // همان فایل قبلاً وارد شده؟ بدون تأیید صریح (force) دوباره ثبت نمی‌شود
+  if (fileHash && !req.force) {
+    const prev = db.prepare('SELECT fileName, at, added, updated FROM imports WHERE agencyId = ? AND fileHash = ?').get(me.agencyId, fileHash);
+    if (prev) return { ok: true, skipped: true, previous: { ...prev } };
+  }
   const now = new Date().toISOString();
   const baseCols = P_COLS.filter(c => !KEEP.includes(c) && c !== 'policyNo');
   const upd = db.prepare(`UPDATE policies SET ${baseCols.map(c => `${c} = ?`).join(', ')} WHERE agencyId = ? AND policyNo = ?`);
-  let added = 0, updated = 0, autoRenewed = 0;
+  const seen = new Set();
+  let added = 0, updated = 0, repeatedInFile = 0, autoRenewed = 0;
   tx(() => {
     for (const r of rows) {
       const no = String(r.policyNo || '').trim();
       if (!no) continue;
+      const again = seen.has(no); // ردیف تکراری داخل خود فایل
+      seen.add(no);
       const cur = q.policy.get(me.agencyId, no);
       if (!cur) {
         q.insPolicy.run(me.agencyId, ...P_COLS.map(c => c === 'importedAt' ? now : c === 'policyNo' ? no : String(r[c] ?? '')));
         added++;
       } else {
         upd.run(...baseCols.map(c => r[c] === undefined ? cur[c] : String(r[c])), me.agencyId, no);
-        updated++;
+        if (again) repeatedInFile++; else updated++;
       }
     }
     autoRenewed = detectRenewals(me.agencyId, now);
+    if (fileHash) {
+      const prev = db.prepare('SELECT fileName FROM imports WHERE agencyId = ? AND fileHash = ?').get(me.agencyId, fileHash);
+      db.prepare('INSERT OR REPLACE INTO imports (agencyId, fileHash, fileName, at, added, updated) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(me.agencyId, fileHash, fileName || (prev ? prev.fileName : ''), now, added, updated);
+    }
   });
   const total = db.prepare('SELECT COUNT(*) AS n FROM policies WHERE agencyId = ?').get(me.agencyId).n;
-  return { ok: true, added, updated, total, autoRenewed };
+  return { ok: true, added, updated, repeatedInFile, total, autoRenewed };
 }
 
 function addAction(me, req) {
@@ -409,7 +431,7 @@ function handle(req, ip) {
     case 'platformOverview': return platformOverview(me);
     case 'platformResetPassword': return platformResetPassword(me, req);
     case 'platformSetActive': return platformSetActive(me, req);
-    case 'import': if (me.role !== 'admin') fail('دسترسی ندارید'); return importRows(me, req.rows);
+    case 'import': if (me.role !== 'admin') fail('دسترسی ندارید'); return importRows(me, req);
     case 'addAction': return addAction(me, req);
     case 'assign': return assign(me, req.policyNos, req.to);
     case 'saveUser': if (me.role !== 'admin') fail('دسترسی ندارید'); return saveUser(me, req);

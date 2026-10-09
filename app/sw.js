@@ -1,4 +1,4 @@
-const CACHE = 'bime-dey-v3';
+const CACHE = 'bime-dey-v4';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'jalali.js', 'manifest.json'];
 
 self.addEventListener('install', e => {

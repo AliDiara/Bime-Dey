@@ -9,7 +9,8 @@ Last updated: 2026-10-09 (handover note written from Claude Code memory).
 - Reply to the user in Persian. UI is Persian, RTL, with Jalali dates.
 - The repo is on GitHub (`AliDiara/Bime-Dey`). Never commit `sample/` (real customer data), Excel files, `server/data/`, database files, keys or `.env` files.
 - Ask before deploy, `git push`, or anything that touches production data.
-- Re-import merges by policy number and must never delete earlier actions.
+- Re-import merges by policy number (per agency) and must never delete earlier actions or create duplicate rows. The same file (SHA-256 of its bytes) is skipped unless the user confirms (`imports` table, `force`). `issueDate` is optional and is only overwritten when the column exists in the file. Season (بهار/تابستان/پاییز/زمستان + year) is derived from the expiry date on the client.
+- `backend/Code.gs` (legacy Apps Script) does not have issueDate, file-hash dedupe, the platform panel or password change; do not expect parity.
 - Staff act only on unassigned files or files assigned to them. Admin acts on all.
 - Passwords are stored with scrypt (legacy SHA-256 hashes from the old Sheet are upgraded on first login).
 - Roles: `super` (platform owner, no customer data, panel tab "پلتفرم"), `admin` (agency manager), `employee`. Accounts created or reset by someone else must change the password at first login (`mustChange`).
@@ -29,7 +30,7 @@ cd server && node --test test.js    # tests
 cd server && node server.js         # local run
 ```
 
-`sw.js` serves the app cache-first. When you change files in `app/`, bump `CACHE` in `sw.js` (now `bime-dey-v3`), otherwise users keep the old version.
+`sw.js` serves the app cache-first. When you change files in `app/`, bump `CACHE` in `sw.js` (now `bime-dey-v4`), otherwise users keep the old version.
 
 ## Production
 

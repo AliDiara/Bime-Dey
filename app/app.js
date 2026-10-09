@@ -31,6 +31,8 @@ const RANGES = [
 /* ================= ابزارها ================= */
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fd = v => String(v).replace(/\d/g, d => '۰۱۲۳۴۵۶۷۸۹'[d]);
+const SEASONS = ['بهار', 'تابستان', 'پاییز', 'زمستان'];
 const faNum = n => Number(n || 0).toLocaleString('fa-IR');
 const money = n => (n === '' || n == null || isNaN(n)) ? '—' : faNum(n) + ' ریال';
 function normText(s) {
@@ -138,7 +140,7 @@ function demoCall(action, p) {
 const S = {
   user: null, data: { policies: [], actions: [], users: [] },
   tab: 'dash', scope: '', limit: 60,
-  f: { q: '', range: 'all', status: 'open', branch: '', assignee: '' },
+  f: { q: '', range: 'all', status: 'open', branch: '', assignee: '', season: '', sort: 'expiry' },
   today: Jal.todayJdn()
 };
 
@@ -160,6 +162,10 @@ function enrich() {
     p.open = !TERMINAL.includes(p.status);
     p.fu = Jal.parse(p.nextFollowUp);
     p.premiumN = Number(p.premium) || 0;
+    p.issueJdn = Jal.parse(p.issueDate);
+    const m = /^(\d{4})\/(\d{2})\//.exec(p.expiry || '');
+    p.seasonKey = m ? m[1] + '-' + Math.ceil(+m[2] / 3) : '';
+    p.seasonLabel = m ? SEASONS[Math.ceil(+m[2] / 3) - 1] + ' ' + fd(m[1]) : '';
   });
   S.names = {};
   S.data.users.forEach(u => S.names[u.username] = u.name);
@@ -171,7 +177,7 @@ const isAdmin = () => S.user.role === 'admin';
 function applyData(d) {
   S.user = d.me;
   S.agency = d.agency || { name: '' };
-  S.data = { policies: d.policies, actions: d.actions, users: d.users };
+  S.data = { policies: d.policies, actions: d.actions, users: d.users, imports: d.imports || [] };
   enrich();
 }
 
@@ -516,6 +522,9 @@ function renderDash() {
 /* ================= لیست تمدیدها ================= */
 function renderListView() {
   const branches = [...new Set(S.data.policies.map(p => p.branch))].filter(Boolean).sort();
+  const seasons = new Map();
+  S.data.policies.forEach(p => { if (p.seasonKey) seasons.set(p.seasonKey, p.seasonLabel); });
+  const seasonOpts = [...seasons.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   if (S.f.assignee === '') S.f.assignee = isAdmin() ? 'all' : 'mineplus';
   const f = S.f;
   $('#view').innerHTML = `
@@ -523,6 +532,8 @@ function renderListView() {
     <div class="filters">
       <input id="q" type="search" placeholder="جستجو: نام، موبایل، شماره بیمه‌نامه" value="${esc(f.q)}">
       <select data-f="status">${[['open', 'باز (تمدیدنشده)'], ['all', 'همه وضعیت‌ها'], ['', 'جدید (بدون اقدام)']].concat(Object.entries(STATUS).filter(([k]) => k).map(([k, v]) => [k, v[0]])).map(o => `<option value="${o[0]}" ${f.status === o[0] ? 'selected' : ''}>${o[1]}</option>`).join('')}</select>
+      <select data-f="season"><option value="">همه فصل‌های انقضا</option>${seasonOpts.map(([k, l]) => `<option value="${k}" ${f.season === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <select data-f="sort"><option value="expiry" ${f.sort === 'expiry' ? 'selected' : ''}>مرتب: نزدیک‌ترین انقضا</option><option value="issue" ${f.sort === 'issue' ? 'selected' : ''}>مرتب: جدیدترین تاریخ صدور</option></select>
       <select data-f="branch"><option value="">همه رشته‌ها</option>${branches.map(b => `<option ${f.branch === b ? 'selected' : ''}>${esc(b)}</option>`).join('')}</select>
       <select data-f="assignee"><option value="all" ${f.assignee === 'all' ? 'selected' : ''}>همه پرونده‌ها</option><option value="mineplus" ${f.assignee === 'mineplus' ? 'selected' : ''}>من + بدون مسئول</option><option value="mine" ${f.assignee === 'mine' ? 'selected' : ''}>فقط من</option><option value="none" ${f.assignee === 'none' ? 'selected' : ''}>بدون مسئول</option>${S.data.users.map(u => `<option value="u:${esc(u.username)}" ${f.assignee === 'u:' + u.username ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>
     </div>
@@ -535,6 +546,7 @@ function filtered() {
   let a = S.data.policies.filter(p => {
     if (f.status === 'open' ? !p.open : (f.status !== 'all' && p.status !== f.status)) return false;
     if (f.branch && p.branch !== f.branch) return false;
+    if (f.season && p.seasonKey !== f.season) return false;
     if (f.assignee === 'mine' && p.assignedTo !== me) return false;
     if (f.assignee === 'mineplus' && p.assignedTo && p.assignedTo !== me) return false;
     if (f.assignee === 'none' && p.assignedTo) return false;
@@ -553,7 +565,9 @@ function filtered() {
     if (q && !(`${p.insuredName} ${p.mobile} ${p.phone} ${p.policyNo} ${p.insuredCode}`.toLowerCase().includes(q))) return false;
     return true;
   });
-  a.sort(f.range === 'followup' ? (x, y) => x.fu - y.fu : (x, y) => (x.days ?? 1e9) - (y.days ?? 1e9));
+  const byExpiry = (x, y) => (x.days ?? 1e9) - (y.days ?? 1e9);
+  const byIssue = (x, y) => (y.issueJdn ?? -1) - (x.issueJdn ?? -1) || byExpiry(x, y);
+  a.sort(f.range === 'followup' ? (x, y) => x.fu - y.fu : f.sort === 'issue' ? byIssue : byExpiry);
   return a;
 }
 
@@ -574,7 +588,8 @@ function renderList() {
   $('#list').innerHTML = show.length ? show.map(p => `
     <div class="card item">
       <div class="r1"><div><div class="nm">${esc(p.insuredName || '—')}</div>
-        <div class="meta"><span>${esc(p.branch)}</span><span>انقضا: ${esc(p.expiry)}</span><span>${money(p.premiumN)}</span></div></div>
+        <div class="meta"><span>${esc(p.branch)}</span><span>انقضا: ${esc(p.expiry)}</span>${p.issueDate ? `<span>صدور: ${esc(p.issueDate)}</span>` : ''}<span>${money(p.premiumN)}</span></div>
+        ${p.seasonLabel ? `<div class="meta"><span class="badge b-info">${p.seasonLabel}</span></div>` : ''}</div>
         <div style="text-align:left;display:grid;gap:4px;justify-items:end">${dayBadge(p)}<span class="badge ${STATUS[p.status]?.[1] || 'b-mute'}">${STATUS[p.status]?.[0] || p.status}</span></div></div>
       <div class="meta"><span>مسئول: ${esc(uname(p.assignedTo))}</span>${p.fu != null ? `<span>پیگیری: ${esc(p.nextFollowUp)}</span>` : ''}${p.lastNote ? `<span>📝 ${esc(p.lastNote.slice(0, 60))}</span>` : ''}</div>
       <div class="acts">
@@ -661,9 +676,10 @@ function renderAdmin() {
   const welcome = S.data.policies.length ? '' : `<div class="card" style="margin-bottom:10px"><b>خوش آمدید 👋</b><div class="meta" style="display:block">شروع کار در دو قدم: ۱) فایل اکسل بیمه دی را بارگذاری کنید. ۲) کارمندان را در بخش «کاربران» بسازید و نام کاربری و رمزشان را بدهید.</div></div>`;
   $('#view').innerHTML = `${welcome}<div class="two">
     <div class="card"><h2 style="margin-top:0">ایمپورت خروجی بیمه دی</h2>
-      <p class="meta">فایل اکسل را انتخاب کنید. پرونده‌های جدید اضافه و پرونده‌های موجود (با شماره بیمه‌نامه) به‌روز می‌شوند. اقدامات ثبت‌شده پاک نمی‌شود.</p>
+      <p class="meta">فایل اکسل را انتخاب کنید. پرونده‌های جدید اضافه می‌شوند. اگر پرونده‌ای (با همان شماره بیمه‌نامه) قبلاً ثبت بود، دوباره ساخته نمی‌شود و فقط اطلاعاتش به‌روز می‌شود. وارد کردن دوباره‌ی همان فایل هم تکراری ثبت نمی‌کند. اقدامات ثبت‌شده پاک نمی‌شود.</p>
       <input type="file" id="xl" accept=".xlsx,.xls">
-      <div class="meta" id="impmsg" style="margin-top:8px">در حال حاضر ${faNum(S.data.policies.length)} پرونده ثبت است.</div></div>
+      <div class="meta" id="impmsg" style="margin-top:8px">در حال حاضر ${faNum(S.data.policies.length)} پرونده ثبت است.</div>
+      ${S.data.imports && S.data.imports.length ? `<div class="meta" style="display:block;margin-top:10px"><b>آخرین ایمپورت‌ها</b>${S.data.imports.slice(0, 5).map(i => `<div>${fmtDate(i.at)} — ${esc(i.fileName || 'بدون نام')} (${faNum(i.added)} جدید، ${faNum(i.updated)} تکراری)</div>`).join('')}</div>` : ''}</div>
     <div class="card"><h2 style="margin-top:0">لینک کارمندان</h2>
       ${link ? `<p class="meta">این لینک را برای کارمندان بفرستید. آدرس سرور داخلش است و فقط نام کاربری و رمز لازم دارند.</p><code class="url">${esc(link)}</code>
       <button class="btn sm" style="margin-top:8px" data-act="copyLink">کپی لینک</button>` : '<p class="meta">در حالت آزمایشی لینک وجود ندارد.</p>'}</div>
@@ -678,7 +694,7 @@ function renderAdmin() {
 }
 
 const HMAP = {
-  'رشته': 'branch', 'کد داخلی بیمه نامه': 'internalCode', 'شماره بیمه نامه': 'policyNo', 'تاریخ انقضا': 'expiry',
+  'رشته': 'branch', 'کد داخلی بیمه نامه': 'internalCode', 'شماره بیمه نامه': 'policyNo', 'تاریخ انقضا': 'expiry', 'تاریخ صدور': 'issueDate',
   'نام بیمه گذار': 'insured', 'آدرس بیمه گذار': 'address', 'موبایل بیمه گذار': 'mobile', 'تلفن بیمه گذار': 'phone',
   'حق بیمه': 'premium', 'معرف': 'referrer', 'کد صدور': 'issuer', 'سرپرست واحد صدور': 'supervisor'
 };
@@ -686,6 +702,13 @@ function fixPhone(s) {
   const d = normText(s).replace(/\D/g, '');
   if (/^9\d{9}$/.test(d)) return '0' + d;
   return d;
+}
+// "1405/07/01" یا "1405/07/01 10:30" یا با ارقام فارسی -> "1405/07/01" (یا خالی)
+function jdate(v) {
+  const m = /(\d{4})\D(\d{1,2})\D(\d{1,2})/.exec(normText(v));
+  if (!m) return '';
+  const j = Jal.parse(`${m[1]}/${m[2]}/${m[3]}`);
+  return j == null ? '' : Jal.format(j);
 }
 function parseSheet(rows) {
   const out = []; let bad = 0;
@@ -697,13 +720,17 @@ function parseSheet(rows) {
     let name = normText(o.insured), code = '';
     const m = /^(.*?)\s*کد\s*(\d+)\s*$/.exec(name);
     if (m) { name = m[1]; code = m[2]; }
-    const j = Jal.parse(normText(o.expiry).replace(/\s/g, ''));
-    if (j == null) bad++;
-    out.push({
-      policyNo, branch: normText(o.branch), internalCode: normText(o.internalCode), expiry: j == null ? normText(o.expiry) : Jal.format(j),
+    const exp = jdate(o.expiry);
+    if (!exp) bad++;
+    const row = {
+      policyNo, branch: normText(o.branch), internalCode: normText(o.internalCode), expiry: exp || normText(o.expiry),
       insuredName: name, insuredCode: code, mobile: fixPhone(o.mobile), phone: fixPhone(o.phone), address: normText(o.address),
       premium: normText(o.premium).replace(/\D/g, ''), issuer: normText(o.issuer), supervisor: normText(o.supervisor), referrer: normText(o.referrer)
-    });
+    };
+    // تاریخ صدور فقط وقتی ستونش در فایل باشد فرستاده می‌شود تا مقدار قبلی پاک نشود
+    const issue = o.issueDate !== undefined ? jdate(o.issueDate) : '';
+    if (issue) row.issueDate = issue;
+    out.push(row);
   });
   return { rows: out, bad };
 }
@@ -712,14 +739,29 @@ async function onFile(e) {
   if (!file) return;
   const msg = $('#impmsg');
   try {
-    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    const buf = await file.arrayBuffer();
+    let fileHash = '';
+    try { fileHash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map(b => b.toString(16).padStart(2, '0')).join(''); } catch (er) { /* بدون هش فایل */ }
+    const wb = XLSX.read(buf, { type: 'array' });
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '', raw: false });
     const { rows: parsed, bad } = parseSheet(rows);
     if (!parsed.length) { msg.textContent = 'ردیفی با «شماره بیمه نامه» پیدا نشد. فایل را بررسی کنید.'; return; }
     if (!confirm(`${parsed.length} پرونده خوانده شد${bad ? ` (${bad} ردیف تاریخ نامعتبر)` : ''}. ایمپورت شود؟`)) return;
     msg.textContent = 'در حال ارسال به سرور…';
-    const r = await call('import', { rows: parsed });
-    msg.textContent = `انجام شد: ${faNum(r.added)} جدید، ${faNum(r.updated)} به‌روزرسانی${r.autoRenewed ? '، ' + faNum(r.autoRenewed) + ' تمدید خودکار تشخیص داده شد' : ''}. مجموع ${faNum(r.total)}.`;
+    let r = await call('import', { rows: parsed, fileHash, fileName: file.name });
+    if (r.skipped) {
+      const when = fmtDate(r.previous.at);
+      if (!confirm(`این فایل قبلاً در ${when} وارد شده است (${r.previous.fileName || 'بدون نام'}).\nدوباره وارد شود؟ (پرونده تکراری ساخته نمی‌شود)`)) {
+        msg.textContent = `این فایل قبلاً در ${when} وارد شده بود؛ تغییری ایجاد نشد.`;
+        e.target.value = '';
+        return;
+      }
+      msg.textContent = 'در حال ارسال به سرور…';
+      r = await call('import', { rows: parsed, fileHash, fileName: file.name, force: true });
+    }
+    msg.textContent = `انجام شد: ${faNum(r.added)} پرونده جدید، ${faNum(r.updated)} پرونده تکراری (قبلاً ثبت بود؛ دوباره ساخته نشد)` +
+      (r.repeatedInFile ? `، ${faNum(r.repeatedInFile)} ردیف تکراری داخل خود فایل` : '') +
+      (r.autoRenewed ? `، ${faNum(r.autoRenewed)} تمدید خودکار تشخیص داده شد` : '') + `. مجموع ${faNum(r.total)}.`;
     await load();
   } catch (err) { msg.textContent = 'خطا: ' + err.message; }
   e.target.value = '';

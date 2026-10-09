@@ -138,6 +138,67 @@ test('تشخیص خودکار تمدید', async () => {
   assert.equal((await api({ action: 'import', token: A.token, rows })).autoRenewed, 0);
 });
 
+test('تاریخ صدور، فایل تکراری و ردیف تکراری', async () => {
+  const rows = [
+    row('i1', '1405/10/05', '31', 'خودرو', { issueDate: '1404/10/03' }),
+    row('i1', '1405/10/05', '31', 'خودرو', { issueDate: '1404/10/03' }), // تکرار داخل خود فایل
+    row('i2', '1405/11/05', '32')
+  ];
+  const count = async () => (await api({ action: 'getData', token: A.token })).policies.length;
+  const base = await count();
+  const r1 = await api({ action: 'import', token: A.token, rows, fileHash: 'h1', fileName: 'winter.xlsx' });
+  assert.equal(r1.added, 2); assert.equal(r1.repeatedInFile, 1); assert.equal(r1.updated, 0);
+  assert.equal(await count(), base + 2);
+  const get = async no => (await api({ action: 'getData', token: A.token })).policies.find(p => p.policyNo === no);
+  assert.equal((await get('i1')).issueDate, '1404/10/03');
+  assert.equal((await get('i2')).issueDate, '');
+
+  // همان فایل دوباره: ثبت نمی‌شود
+  const r2 = await api({ action: 'import', token: A.token, rows, fileHash: 'h1', fileName: 'winter-again.xlsx' });
+  assert.equal(r2.skipped, true); assert.equal(r2.previous.fileName, 'winter.xlsx');
+  assert.equal(await count(), base + 2);
+
+  // فایل دیگر با همان بیمه‌نامه‌ها: ردیف تکراری ساخته نمی‌شود
+  const r3 = await api({ action: 'import', token: A.token, rows, fileHash: 'h2', fileName: 'copy.xlsx' });
+  assert.equal(r3.added, 0); assert.equal(r3.updated, 2); assert.equal(r3.repeatedInFile, 1);
+  assert.equal(await count(), base + 2);
+
+  // نبودن تاریخ صدور در فایل بعدی، مقدار قبلی را پاک نمی‌کند
+  await api({ action: 'import', token: A.token, rows: [row('i1', '1405/10/05', '31')], fileHash: 'h3' });
+  assert.equal((await get('i1')).issueDate, '1404/10/03');
+
+  // با تأیید صریح (force) می‌شود دوباره وارد کرد
+  const r4 = await api({ action: 'import', token: A.token, rows, fileHash: 'h1', force: true });
+  assert.equal(r4.skipped, undefined); assert.equal(r4.added, 0);
+
+  // تاریخچه ایمپورت
+  const hist = (await api({ action: 'getData', token: A.token })).imports;
+  assert.ok(hist.length >= 3 && hist.some(h => h.fileName === 'winter.xlsx'));
+
+  // نمایندگی دیگر فایل با همان هش را مستقل وارد می‌کند
+  const rb = await api({ action: 'import', token: B.token, rows: [row('i1', '1405/10/05', '99')], fileHash: 'h1' });
+  assert.equal(rb.skipped, undefined); assert.equal(rb.added, 1);
+});
+
+test('مهاجرت دیتابیس قدیمی بدون ستون issueDate', async () => {
+  const { DatabaseSync } = require('node:sqlite');
+  const { spawnSync } = require('node:child_process');
+  const old = path.join(tmp, 'old.db');
+  const d = new DatabaseSync(old);
+  // ساختار قبلی جدول پرونده‌ها (بدون issueDate)
+  const oldCols = ['policyNo', 'branch', 'internalCode', 'expiry', 'insuredName', 'insuredCode', 'mobile', 'phone', 'address', 'premium',
+    'issuer', 'supervisor', 'referrer', 'assignedTo', 'status', 'lastActionAt', 'nextFollowUp', 'finalPremium', 'lastNote', 'importedAt'];
+  d.exec(`CREATE TABLE policies (agencyId TEXT NOT NULL, ${oldCols.map(c => `${c} TEXT NOT NULL DEFAULT ''`).join(', ')}, PRIMARY KEY (agencyId, policyNo))`);
+  d.prepare("INSERT INTO policies (agencyId, policyNo, branch, expiry) VALUES ('a1', 'old1', 'خودرو', '1405/07/01')").run();
+  d.close();
+  const r = spawnSync(process.execPath, ['-e', "require('./server.js')"], { cwd: __dirname, env: { ...process.env, DB_PATH: old }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const d2 = new DatabaseSync(old);
+  assert.ok(d2.prepare('PRAGMA table_info(policies)').all().some(c => c.name === 'issueDate'));
+  assert.equal(d2.prepare("SELECT branch FROM policies WHERE policyNo = 'old1'").get().branch, 'خودرو');
+  d2.close();
+});
+
 test('ثبت‌نام و گذرواژه قدیمی sha256 (مهاجرت از Sheet)', async () => {
   const { DatabaseSync } = require('node:sqlite');
   const d = new DatabaseSync(DB);
